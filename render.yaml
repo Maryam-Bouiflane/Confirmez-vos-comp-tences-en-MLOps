@@ -16,7 +16,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     region: frankfurt  # or virginia, frankfurt, singapore, etc.
     plan: free  # or starter, standard, pro
     
@@ -44,7 +44,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile.streamlit
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     region: frankfurt
     plan: free
     
@@ -76,7 +76,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     branch: develop
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     region: frankfurt
     plan: free
 
@@ -99,7 +99,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile.streamlit
     branch: develop
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     region: frankfurt
     plan: free
 
