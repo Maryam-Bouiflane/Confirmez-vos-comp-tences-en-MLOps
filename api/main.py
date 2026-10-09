@@ -43,6 +43,12 @@ SCHEMA_PATH = os.getenv("SCHEMA_PATH", str(Path(__file__).parent / "schema" / "r
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///tracking/mlflow.db")
 MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "credit_scoring_api")
 
+# Configure MLflow at import time (not only at startup): predictions can be
+# logged before the startup event runs (e.g. TestClient without a context
+# manager in tests), and the default ./mlruns location would then scatter
+# artifacts at the project root.
+setup_mlflow_experiment(MLFLOW_EXPERIMENT, MLFLOW_TRACKING_URI)
+
 # Raw input schema (generated at training time by api/train_model.py)
 with open(SCHEMA_PATH, encoding="utf-8") as _f:
     SCHEMA = json.load(_f)
@@ -310,7 +316,6 @@ async def startup_event():
     global model, preprocessor, feature_names, model_version, mlflow_run_id, model_metadata
     
     logger.info("Starting API...")
-    setup_mlflow_experiment(MLFLOW_EXPERIMENT, MLFLOW_TRACKING_URI)
     logger.info(f"MLflow tracking URI: {MLFLOW_TRACKING_URI}")
     logger.info(f"Raw input schema: {len(RAW_FIELDS)} fields from {SCHEMA_PATH}")
     

@@ -38,6 +38,12 @@ htmlcov/
 # MLflow / Optuna tracking data (databases, artifacts, studies)
 tracking/
 
+# Safety net: MLflow default locations if a process runs without the
+# tracking URI set (api/main.py configures it at import time)
+mlruns/
+mlflow.db
+optuna.db
+
 # Temporary files
 tmp/
 *.tmp
