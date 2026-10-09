@@ -1,0 +1,161 @@
+# Render Blueprint Configuration
+# This file configures the deployment on Render.com
+# Uses uv for dependency management
+
+services:
+  # =====================================================================
+  # PRODUCTION (branch: main)
+  # URLs are assigned by Render when the services are created (visible
+  # in the dashboard); the dashboard resolves the API host automatically
+  # via fromService, so no URL is hardcoded here.
+  # =====================================================================
+
+  # FastAPI Backend Service (Production)
+  - type: web
+    name: credit-scoring-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    branch: main
+    autoDeploy: true
+    region: frankfurt  # or virginia, frankfurt, singapore, etc.
+    plan: free  # or starter, standard, pro
+    
+    # Environment variables
+    envVars:
+      - key: MODEL_PATH
+        value: /app/api/models/credit_scoring_model.pkl
+      # MLflow: sqlite:////tmp/mlflow.db (absolute path, 4 slashes) so the
+      # non-root user can write it; /tmp is ephemeral on Render anyway.
+      # For persistent tracking, set MLFLOW_TRACKING_URI to a remote
+      # server in the Render dashboard (secret), not in this file.
+      - key: MLFLOW_TRACKING_URI
+        value: sqlite:////tmp/mlflow.db
+      - key: MLFLOW_EXPERIMENT
+        value: credit_scoring_api
+    
+    # Health check
+    healthCheckPath: /health
+    healthCheckInterval: 30
+    
+    # Scaling
+    minInstances: 1
+    maxInstances: 1
+    
+    # Networking
+    port: 8000
+
+  # Streamlit Frontend Service (Production)
+  - type: web
+    name: credit-scoring-dashboard
+    env: docker
+    dockerfilePath: ./Dockerfile.streamlit
+    branch: main
+    autoDeploy: true
+    region: frankfurt
+    plan: free
+    
+    # Environment variables
+    envVars:
+      - key: API_URL
+        # Injected by Render: hostname of the production API service
+        # (scheme is added by streamlit_app/app.py)
+        fromService:
+          type: web
+          name: credit-scoring-api
+          property: host
+    
+    # Health check
+    healthCheckPath: /
+    healthCheckInterval: 30
+    
+    # Scaling
+    minInstances: 1
+    maxInstances: 1
+    
+    # Networking
+    port: 8501
+
+  # =====================================================================
+  # STAGING (branch: develop)
+  # Deployed from the develop branch. URLs get a random suffix assigned
+  # by Render (e.g. credit-scoring-api-staging-abcd.onrender.com).
+  # The dashboard's API_URL is injected automatically via fromService.
+  # =====================================================================
+
+  # FastAPI Backend Service (Staging)
+  - type: web
+    name: credit-scoring-api-staging
+    env: docker
+    dockerfilePath: ./Dockerfile
+    branch: develop
+    autoDeploy: true
+    region: frankfurt
+    plan: free
+
+    # Environment variables
+    envVars:
+      - key: MODEL_PATH
+        value: /app/api/models/credit_scoring_model.pkl
+      # Separate experiment for staging predictions
+      - key: MLFLOW_TRACKING_URI
+        value: sqlite:////tmp/mlflow.db
+      - key: MLFLOW_EXPERIMENT
+        value: credit_scoring_api_staging
+
+    # Health check
+    healthCheckPath: /health
+    healthCheckInterval: 30
+
+    # Scaling
+    minInstances: 1
+    maxInstances: 1
+
+    # Networking
+    port: 8000
+
+  # Streamlit Frontend Service (Staging)
+  - type: web
+    name: credit-scoring-dashboard-staging
+    env: docker
+    dockerfilePath: ./Dockerfile.streamlit
+    branch: develop
+    autoDeploy: true
+    region: frankfurt
+    plan: free
+
+    # Environment variables
+    envVars:
+      - key: API_URL
+        # Injected by Render: hostname of the staging API service
+        # (scheme is added by streamlit_app/app.py)
+        fromService:
+          type: web
+          name: credit-scoring-api-staging
+          property: host
+
+    # Health check
+    healthCheckPath: /
+    healthCheckInterval: 30
+
+    # Scaling
+    minInstances: 1
+    maxInstances: 1
+
+    # Networking
+    port: 8501
+
+
+# For Render CLI deployment:
+# 1. Install Render CLI: https://render.com/docs/cli
+# 2. Login: render account login
+# 3. Link repository: render repo connect
+# 4. Deploy: render blueprint deploy
+#    OR for existing service: render deploy <service-id>
+
+# Notes:
+# - Two environments: PRODUCTION tracks main, STAGING tracks develop
+# - The staging dashboard's API_URL is resolved automatically via fromService,
+#   so no manual URL update is needed after the staging API is deployed
+# - The develop branch must exist on GitHub for staging services to build
+# - For production, consider using paid plans for better performance
+# - Secrets should be configured in the Render dashboard, not in this file

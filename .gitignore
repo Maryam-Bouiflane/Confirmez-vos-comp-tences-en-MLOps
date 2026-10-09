@@ -1,0 +1,80 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MLflow / Optuna tracking data (databases, artifacts, studies)
+tracking/
+
+# Temporary files
+tmp/
+*.tmp
+
+# # Data — not committed: files exceed GitHub's 100 MB limit.
+# # Download the Home Credit CSVs into data/raw/ locally (see README).
+data/raw/
+
+# # Models
+# *.pkl
+# *.joblib
+# !api/models/credit_scoring_model.pkl
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Docker
+.docker/
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Render (optional: uncomment if not using Render)
+# render.yaml
+
+# Note: uv.lock is intentionally NOT ignored - it should be committed for reproducibility
