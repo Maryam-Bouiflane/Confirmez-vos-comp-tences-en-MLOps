@@ -376,11 +376,19 @@ class TestStartupAndMonitoring:
     """Tests for the startup event and monitoring endpoints."""
 
     def test_startup_degraded_without_model_file(self):
-        """Entering the app context runs startup: no model file -> degraded."""
-        with TestClient(app) as c:
-            data = c.get("/health").json()
-            assert data["status"] == "degraded"
-            assert data["model_loaded"] is False
+        """Entering the app context with an unfindable model -> degraded.
+
+        The model artifact is committed to the repo (the Docker image bakes
+        it in), so the missing-file scenario is simulated by patching
+        MODEL_PATH to a nonexistent path and clearing any loaded model.
+        """
+        with patch("api.main.MODEL_PATH", "/nonexistent/model.pkl"), \
+             patch("api.main.model", None), \
+             patch("api.main.preprocessor", None):
+            with TestClient(app) as c:
+                data = c.get("/health").json()
+                assert data["status"] == "degraded"
+                assert data["model_loaded"] is False
 
     def test_metrics_endpoint(self):
         data = client.get("/metrics").json()
