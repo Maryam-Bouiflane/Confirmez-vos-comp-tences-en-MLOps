@@ -13,7 +13,7 @@ services:
   # FastAPI Backend Service (Production)
   - type: web
     name: credit-scoring-api
-    env: docker
+    runtime: docker
     dockerfilePath: ./Dockerfile
     branch: main
     autoDeploy: true
@@ -35,19 +35,13 @@ services:
     
     # Health check
     healthCheckPath: /health
-    healthCheckInterval: 30
     
-    # Scaling
-    minInstances: 1
-    maxInstances: 1
     
-    # Networking
-    port: 8000
 
   # Streamlit Frontend Service (Production)
   - type: web
     name: credit-scoring-dashboard
-    env: docker
+    runtime: docker
     dockerfilePath: ./Dockerfile.streamlit
     branch: main
     autoDeploy: true
@@ -66,14 +60,8 @@ services:
     
     # Health check
     healthCheckPath: /
-    healthCheckInterval: 30
     
-    # Scaling
-    minInstances: 1
-    maxInstances: 1
     
-    # Networking
-    port: 8501
 
   # =====================================================================
   # STAGING (branch: develop)
@@ -85,7 +73,7 @@ services:
   # FastAPI Backend Service (Staging)
   - type: web
     name: credit-scoring-api-staging
-    env: docker
+    runtime: docker
     dockerfilePath: ./Dockerfile
     branch: develop
     autoDeploy: true
@@ -104,19 +92,11 @@ services:
 
     # Health check
     healthCheckPath: /health
-    healthCheckInterval: 30
-
-    # Scaling
-    minInstances: 1
-    maxInstances: 1
-
-    # Networking
-    port: 8000
 
   # Streamlit Frontend Service (Staging)
   - type: web
     name: credit-scoring-dashboard-staging
-    env: docker
+    runtime: docker
     dockerfilePath: ./Dockerfile.streamlit
     branch: develop
     autoDeploy: true
@@ -135,15 +115,6 @@ services:
 
     # Health check
     healthCheckPath: /
-    healthCheckInterval: 30
-
-    # Scaling
-    minInstances: 1
-    maxInstances: 1
-
-    # Networking
-    port: 8501
-
 
 # For Render CLI deployment:
 # 1. Install Render CLI: https://render.com/docs/cli
