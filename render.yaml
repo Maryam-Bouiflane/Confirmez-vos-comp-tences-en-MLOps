@@ -1,15 +1,15 @@
-# Render Blueprint Configuration
-# This file configures the deployment on Render.com
-# Uses uv for dependency management
+# Render Blueprint — PRODUCTION
+#
+# This blueprint instance is bound to the main branch.
+# The staging services are defined in a separate blueprint instance
+# (render.staging.yaml, bound to the develop branch), because a Render
+# Blueprint instance is attached to a single branch for sync and
+# auto-deploy triggers.
+#
+# Services deploy automatically after the CI checks on main pass
+# (autoDeployTrigger: checksPass).
 
 services:
-  # =====================================================================
-  # PRODUCTION (branch: main)
-  # URLs are assigned by Render when the services are created (visible
-  # in the dashboard); the dashboard resolves the API host automatically
-  # via fromService, so no URL is hardcoded here.
-  # =====================================================================
-
   # FastAPI Backend Service (Production)
   - type: web
     name: credit-scoring-api
@@ -17,9 +17,9 @@ services:
     dockerfilePath: ./Dockerfile
     branch: main
     autoDeployTrigger: checksPass
-    region: frankfurt  # or virginia, frankfurt, singapore, etc.
-    plan: free  # or starter, standard, pro
-    
+    region: frankfurt
+    plan: free
+
     # Environment variables
     envVars:
       - key: MODEL_PATH
@@ -32,11 +32,9 @@ services:
         value: sqlite:////tmp/mlflow.db
       - key: MLFLOW_EXPERIMENT
         value: credit_scoring_api
-    
+
     # Health check
     healthCheckPath: /health
-    
-    
 
   # Streamlit Frontend Service (Production)
   - type: web
@@ -47,7 +45,7 @@ services:
     autoDeployTrigger: checksPass
     region: frankfurt
     plan: free
-    
+
     # Environment variables
     envVars:
       - key: API_URL
@@ -57,76 +55,6 @@ services:
           type: web
           name: credit-scoring-api
           property: host
-    
-    # Health check
-    healthCheckPath: /
-    
-    
-
-  # =====================================================================
-  # STAGING (branch: develop)
-  # Deployed from the develop branch. URLs get a random suffix assigned
-  # by Render (e.g. credit-scoring-api-staging-abcd.onrender.com).
-  # The dashboard's API_URL is injected automatically via fromService.
-  # =====================================================================
-
-  # FastAPI Backend Service (Staging)
-  - type: web
-    name: credit-scoring-api-staging
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    branch: develop
-    autoDeployTrigger: checksPass
-    region: frankfurt
-    plan: free
-
-    # Environment variables
-    envVars:
-      - key: MODEL_PATH
-        value: /app/api/models/credit_scoring_model.pkl
-      # Separate experiment for staging predictions
-      - key: MLFLOW_TRACKING_URI
-        value: sqlite:////tmp/mlflow.db
-      - key: MLFLOW_EXPERIMENT
-        value: credit_scoring_api_staging
-
-    # Health check
-    healthCheckPath: /health
-
-  # Streamlit Frontend Service (Staging)
-  - type: web
-    name: credit-scoring-dashboard-staging
-    runtime: docker
-    dockerfilePath: ./Dockerfile.streamlit
-    branch: develop
-    autoDeployTrigger: checksPass
-    region: frankfurt
-    plan: free
-
-    # Environment variables
-    envVars:
-      - key: API_URL
-        # Injected by Render: hostname of the staging API service
-        # (scheme is added by streamlit_app/app.py)
-        fromService:
-          type: web
-          name: credit-scoring-api-staging
-          property: host
 
     # Health check
     healthCheckPath: /
-
-# For Render CLI deployment:
-# 1. Install Render CLI: https://render.com/docs/cli
-# 2. Login: render account login
-# 3. Link repository: render repo connect
-# 4. Deploy: render blueprint deploy
-#    OR for existing service: render deploy <service-id>
-
-# Notes:
-# - Two environments: PRODUCTION tracks main, STAGING tracks develop
-# - The staging dashboard's API_URL is resolved automatically via fromService,
-#   so no manual URL update is needed after the staging API is deployed
-# - The develop branch must exist on GitHub for staging services to build
-# - For production, consider using paid plans for better performance
-# - Secrets should be configured in the Render dashboard, not in this file
