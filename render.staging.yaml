@@ -1,0 +1,59 @@
+# Render Blueprint — STAGING
+#
+# This blueprint instance is bound to the develop branch.
+# Create it with: New -> Blueprint -> select the repo -> branch: develop
+# -> Blueprint Path: render.staging.yaml
+# (Production services are defined in render.yaml, bound to main.)
+#
+# Services deploy automatically after the CI checks on develop pass
+# (autoDeployTrigger: checksPass). URLs get a random suffix assigned by
+# Render (e.g. credit-scoring-api-staging-abcd.onrender.com); the
+# dashboard's API_URL is injected automatically via fromService.
+
+services:
+  # FastAPI Backend Service (Staging)
+  - type: web
+    name: credit-scoring-api-staging
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    branch: develop
+    autoDeployTrigger: checksPass
+    region: frankfurt
+    plan: free
+
+    # Environment variables
+    envVars:
+      - key: MODEL_PATH
+        value: /app/api/models/credit_scoring_model.pkl
+      # Separate experiment so staging predictions never mix with
+      # production logs; /tmp is ephemeral on Render anyway.
+      - key: MLFLOW_TRACKING_URI
+        value: sqlite:////tmp/mlflow.db
+      - key: MLFLOW_EXPERIMENT
+        value: credit_scoring_api_staging
+
+    # Health check
+    healthCheckPath: /health
+
+  # Streamlit Frontend Service (Staging)
+  - type: web
+    name: credit-scoring-dashboard-staging
+    runtime: docker
+    dockerfilePath: ./Dockerfile.streamlit
+    branch: develop
+    autoDeployTrigger: checksPass
+    region: frankfurt
+    plan: free
+
+    # Environment variables
+    envVars:
+      - key: API_URL
+        # Injected by Render: hostname of the staging API service
+        # (scheme is added by streamlit_app/app.py)
+        fromService:
+          type: web
+          name: credit-scoring-api-staging
+          property: host
+
+    # Health check
+    healthCheckPath: /
