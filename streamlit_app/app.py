@@ -108,10 +108,12 @@ def call_api(endpoint: str, method: str = "GET", json: Optional[Dict] = None) ->
     url = f"{API_URL}{endpoint}"
     
     try:
+        # 30s: the API runs on the Render free plan and can be asleep;
+        # waking it up takes up to ~1 min, so 10s timed out on cold starts
         if method.upper() == "GET":
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=30)
         elif method.upper() == "POST":
-            response = requests.post(url, json=json, timeout=10)
+            response = requests.post(url, json=json, timeout=30)
         else:
             raise ValueError(f"Unsupported method: {method}")
         
@@ -121,6 +123,12 @@ def call_api(endpoint: str, method: str = "GET", json: Optional[Dict] = None) ->
     except requests.exceptions.RequestException as e:
         st.error(f"❌ API Error: {str(e)}")
         st.error(f"URL: {url}")
+        if isinstance(e, requests.exceptions.Timeout):
+            st.info(
+                "The API may be waking up (Render free plan services sleep "
+                "after inactivity and take up to a minute to restart). "
+                "Please retry in a minute."
+            )
         raise
 
 
