@@ -6,9 +6,12 @@
 # (Production services are defined in render.yaml, bound to main.)
 #
 # Services deploy automatically after the CI checks on develop pass
-# (autoDeployTrigger: checksPass). URLs get a random suffix assigned by
-# Render (e.g. credit-scoring-api-staging-abcd.onrender.com); the
-# dashboard's API_URL is injected automatically via fromService.
+# (autoDeployTrigger: checksPass).
+#
+# Note on API_URL: it is set to the API's full URL directly. The
+# fromService "host" property resolves to the bare service name
+# (without the .onrender.com domain), which breaks the dashboard's
+# requests — the URL is stable, so a direct value is the reliable fix.
 
 services:
   # FastAPI Backend Service (Staging)
@@ -48,12 +51,8 @@ services:
     # Environment variables
     envVars:
       - key: API_URL
-        # Injected by Render: hostname of the staging API service
-        # (scheme is added by streamlit_app/app.py)
-        fromService:
-          type: web
-          name: credit-scoring-api-staging
-          property: host
+        # Full URL of the staging API (see header note about fromService)
+        value: https://credit-scoring-api-staging.onrender.com
 
     # Health check
     healthCheckPath: /
