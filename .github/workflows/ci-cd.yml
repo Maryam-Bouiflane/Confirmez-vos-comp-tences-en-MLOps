@@ -107,7 +107,7 @@ jobs:
               # Schema: raw input fields served dynamically
               response = client.get('/schema')
               assert response.status_code == 200, response.text
-              assert response.json()['n_fields'] == len(response.json()['fields']
+              assert response.json()['n_fields'] == len(response.json()['fields'])
               assert response.json()['n_fields'] == 22  # form-fields model
               print('Schema check: PASSED')
 
