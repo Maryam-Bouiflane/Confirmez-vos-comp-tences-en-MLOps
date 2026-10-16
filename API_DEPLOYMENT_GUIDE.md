@@ -319,16 +319,47 @@ The raw OpenAPI specification in JSON format.
   "preprocessor_loaded": true,
   "model_version": "1.0.0",
   "model_type": "lightgbm",
-  "mlflow_run_id": "56d0ec879b984c2ead508a18b90c7324",
-  "feature_count": 280
+  "mlflow_run_id": "c6424ef529d244d985c512e6055adec1",
+  "feature_count": 152
 }
 ```
+
+### GET /monitoring
+
+**Description**: Live serving metrics for the monitoring dashboard (score
+distribution, inference latency, risk categories)
+
+**Response** (with recent predictions in the in-memory buffer):
+```json
+{
+  "total_predictions": 42,
+  "buffer_capacity": 500,
+  "avg_latency_ms": 33.05,
+  "p95_latency_ms": 58.57,
+  "min_latency_ms": 12.1,
+  "max_latency_ms": 63.05,
+  "default_rate": 0.12,
+  "risk_counts": {"LOW_RISK": 20, "MEDIUM_RISK": 17, "HIGH_RISK": 5},
+  "predictions": [
+    {
+      "probability": 0.4781,
+      "prediction": 0,
+      "risk_category": "HIGH_RISK",
+      "processing_time_ms": 63.05,
+      "timestamp": "2026-10-16T12:26:31.836718+00:00"
+    }
+  ]
+}
+```
+
+The buffer is in-memory (reset on restart/redeploy); every prediction is also
+logged to MLflow for persistent tracking.
 
 ### POST /predict
 
 **Description**: Make a credit scoring prediction
 
-**Request Body**: the raw Home Credit application columns (120 fields, all
+**Request Body**: the raw Home Credit application columns (22 fields, all
 optional — omitted fields are filled with the training median/mode by the
 preprocessor). The full list with types, groups and categorical choices is
 served by `GET /schema`.
@@ -361,7 +392,7 @@ served by `GET /schema`.
   "risk_category": "MEDIUM_RISK",
   "model_version": "1.0.0",
   "model_type": "lightgbm",
-  "mlflow_run_id": "56d0ec879b984c2ead508a18b90c7324",
+  "mlflow_run_id": "c6424ef529d244d985c512e6055adec1",
   "processing_time_ms": 62.72
 }
 ```
@@ -397,9 +428,10 @@ from `api/schema/raw_columns.json`, itself generated at training time by
 
 | Rule | Detail |
 |------|--------|
-| Fields | The 120 raw Home Credit application columns (see `GET /schema`) |
+| Fields | The 22 raw Home Credit application columns shown in the dashboard form (see `GET /schema`) |
 | Required | None — all fields are optional |
 | Numeric fields | Must parse as `float` (422 otherwise) |
+| Business ranges | Key numeric fields carry business ranges (age 18-110 years, external scores in [0, 1], non-negative amounts...) enforced by Pydantic with a 422 on violation |
 | Categorical fields | Any string accepted; values outside the training choices get a neutral encoding |
 | Missing fields | Filled with the training median (numeric) or mode (categorical) before prediction |
 
@@ -412,7 +444,7 @@ the Swagger UI (`/docs`).
 
 The model classifies predictions into three risk categories, **relative to
 the decision threshold optimized at training time** (`best_threshold`, stored
-in the model artifact and visible on `/model` — 0.6627 for the current model):
+in the model artifact and visible on `/model` — 0.6676 for the current model):
 
 | Category | Probability Range | Recommendation |
 |----------|------------------|----------------|
@@ -521,12 +553,13 @@ cat tracking/mlruns/<experiment-id>/<run-id>/artifacts/feature_importances/featu
 
 - **Type**: LightGBM (`LGBMClassifier`)
 - **Version**: 1.0.0
-- **Dataset**: Home Credit `application_train` (dataset version `v1_application_raw`)
-- **Inputs**: 120 raw application columns (all optional, see `/schema`)
-- **Engineered features**: ~280 (see below), produced by `CreditPreprocessor`
-- **Decision threshold**: 0.6627, optimized for F1 on CV predictions (best CV F1: 0.313)
+- **Dataset**: Home Credit `application_train` (dataset version `v2_form_top22`)
+- **Inputs**: 22 raw application columns — exactly the columns exposed in the dashboard form (all optional, see `/schema`)
+- **Engineered features**: 152 (see below), produced by `CreditPreprocessor`
+- **Decision threshold**: 0.6676, optimized for F1 on CV predictions (best CV F1: 0.3124)
+- **Form fields coverage**: 100.0% (the model is trained on exactly the 22 form columns)
 - **Target**: Binary classification (1 = loan default, 0 = no default)
-- **MLflow run**: `56d0ec879b984c2ead508a18b90c7324` (also returned by `/model`)
+- **MLflow run**: `c6424ef529d244d985c512e6055adec1` (also returned by `/model`)
 
 ### Feature Engineering (`api/ml_pipeline.py`)
 
@@ -577,7 +610,8 @@ only `train_model.py` produces.
 There is no hardcoded input class to edit: `PredictionInput` is generated
 dynamically from `api/schema/raw_columns.json`. To change the accepted
 fields, change the training input columns (`api/ml_pipeline.py`) and
-retrain.
+retrain. Business range constraints live in `NUMERIC_CONSTRAINTS`
+(`api/main.py`).
 
 ### Add New Endpoints
 
@@ -655,7 +689,7 @@ taskkill /PID <PID> /F
 ## 🎓 Best Practices Implemented
 
 1. ✅ **Model Loading**: Model loaded once at startup, not per request
-2. ✅ **Input Validation**: Comprehensive validation with Pydantic
+2. ✅ **Input Validation**: Comprehensive validation with Pydantic (types and business ranges)
 3. ✅ **Error Handling**: Proper error handling and HTTP status codes
 4. ✅ **Documentation**: Automatic API documentation with Swagger/ReDoc
 5. ✅ **Testing**: Unit tests, integration tests, and test coverage

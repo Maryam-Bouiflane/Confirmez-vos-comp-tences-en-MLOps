@@ -65,6 +65,75 @@ def setup_mlflow_experiment(experiment_name: str, tracking_uri: str) -> None:
     mlflow.set_experiment(experiment_name)
 
 
+# Raw columns exposed in the dashboard's simplified prediction form.
+# Canonical list: derived once from the deployed model's gain importances
+# aggregated onto the raw columns (see compute_form_coverage). The dashboard
+# is the single contract: /schema serves exactly these fields and the
+# model is trained on exactly these columns.
+TOP_FORM_FIELDS = [
+    "EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
+    "DAYS_BIRTH", "DAYS_EMPLOYED", "CNT_CHILDREN",
+    "AMT_CREDIT", "AMT_ANNUITY", "AMT_GOODS_PRICE", "AMT_INCOME_TOTAL",
+    "NAME_CONTRACT_TYPE", "CODE_GENDER", "NAME_EDUCATION_TYPE",
+    "NAME_INCOME_TYPE", "OCCUPATION_TYPE", "ORGANIZATION_TYPE",
+    "NAME_FAMILY_STATUS",
+    "OWN_CAR_AGE", "DAYS_ID_PUBLISH", "DAYS_LAST_PHONE_CHANGE",
+    "AMT_REQ_CREDIT_BUREAU_YEAR", "REGION_RATING_CLIENT",
+]
+
+# Engineered domain-ratio features -> raw parent columns
+DOMAIN_PARENTS = {
+    'CREDIT_INCOME_PERCENT': ['AMT_CREDIT', 'AMT_INCOME_TOTAL'],
+    'ANNUITY_INCOME_PERCENT': ['AMT_ANNUITY', 'AMT_INCOME_TOTAL'],
+    'CREDIT_TERM': ['AMT_ANNUITY', 'AMT_CREDIT'],
+    'DAYS_EMPLOYED_PERCENT': ['DAYS_EMPLOYED', 'DAYS_BIRTH'],
+}
+
+
+def compute_form_coverage(model, feature_names, raw_columns, top_fields=None):
+    """Share (0-100) of the model's total gain importance attributable to
+    the simplified-form raw columns.
+
+    Each engineered feature's gain is fractionally attributed to its raw
+    parent columns (exact match, one-hot prefix or polynomial containment,
+    explicit domain-feature map), then the share carried by the top-form
+    columns is returned. Works for LightGBM (gain) and any estimator
+    exposing feature_importances_; returns 0.0 when importances are
+    unavailable.
+    """
+    top_set = set(top_fields or TOP_FORM_FIELDS)
+    raw_set = set(raw_columns)
+
+    gains = None
+    try:
+        if hasattr(model, "booster_") and hasattr(model.booster_, "feature_importance"):
+            gains = list(map(float, model.booster_.feature_importance(importance_type="gain")))
+        elif hasattr(model, "feature_importances_"):
+            gains = list(map(float, model.feature_importances_))
+    except (TypeError, ValueError):
+        # Malformed/importance-less model object (e.g. test mocks)
+        return 0.0
+    if not gains or len(gains) != len(feature_names):
+        return 0.0
+
+    total = sum(gains)
+    if total <= 0:
+        return 0.0
+
+    covered = 0.0
+    for name, gain in zip(feature_names, gains):
+        if name in DOMAIN_PARENTS:
+            parents = DOMAIN_PARENTS[name]
+        elif name in raw_set:
+            parents = [name]
+        else:
+            parents = [c for c in raw_columns if c in name]
+        if not parents:
+            continue
+        covered += gain * sum(1 for c in parents if c in top_set) / len(parents)
+    return round(100.0 * covered / total, 1)
+
+
 def load_application_files(data_dir="../data/raw", nrows=None):
     """Load `application_train.csv` and `application_test.csv` into dataframes.
 
