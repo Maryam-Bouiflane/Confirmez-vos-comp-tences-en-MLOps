@@ -474,8 +474,20 @@ async def get_schema():
 
     Generated at training time (api/train_model.py) from the raw Home Credit
     columns. The Streamlit dashboard uses it to build its form dynamically.
+    Numeric fields also carry the business ranges enforced by /predict
+    (NUMERIC_CONSTRAINTS, as "min"/"max") so clients can validate before
+    submitting instead of discovering a 422 after the fact.
     """
-    return SCHEMA
+    fields = []
+    for f in SCHEMA.get("fields", []):
+        constraints = NUMERIC_CONSTRAINTS.get(f["name"], {})
+        extra = {}
+        if "ge" in constraints:
+            extra["min"] = constraints["ge"]
+        if "le" in constraints:
+            extra["max"] = constraints["le"]
+        fields.append({**f, **extra})
+    return {**SCHEMA, "fields": fields}
 
 
 @app.get("/health", response_model=HealthCheckOutput, tags=["monitoring"])
