@@ -29,6 +29,7 @@ from api.ml_pipeline import (
     add_domain_features,
     encode_categoricals,
     _sanitize_feature_names,
+    compute_form_coverage,
 )
 
 # Create test client
@@ -274,6 +275,35 @@ class TestPrediction:
 # Model loading
 # ============================================================================
 
+class TestInputRangeValidation:
+    """Business range constraints on the raw input (422 on out-of-range)."""
+
+    @pytest.mark.parametrize("field,value", [
+        ("EXT_SOURCE_2", 5.0),           # normalized score must be in [0, 1]
+        ("EXT_SOURCE_3", -0.1),
+        ("DAYS_BIRTH", 100),             # positive => negative age
+        ("DAYS_BIRTH", -70000),          # older than 110 years
+        ("AMT_INCOME_TOTAL", -500.0),    # negative income
+        ("CNT_CHILDREN", -1),
+        ("AMT_CREDIT", -1.0),
+        ("REGION_RATING_CLIENT", 7),     # rating only takes values 1-3
+    ])
+    def test_out_of_range_returns_422(self, synthetic_preprocessor, field, value):
+        """Values outside the expected business range must be rejected."""
+        with patch('api.main.model', mock_model()):
+            with patch('api.main.preprocessor', synthetic_preprocessor):
+                response = client.post("/predict", json={field: value})
+                assert response.status_code == 422
+
+    def test_boundary_values_accepted(self, synthetic_preprocessor):
+        """Boundary values of the ranges are valid inputs (inclusive)."""
+        payload = {"DAYS_BIRTH": -6570, "EXT_SOURCE_1": 1.0, "AMT_INCOME_TOTAL": 0.0}
+        with patch('api.main.model', mock_model(0.5, 0)):
+            with patch('api.main.preprocessor', synthetic_preprocessor):
+                response = client.post("/predict", json=payload)
+                assert response.status_code == 200
+
+
 class TestModelLoading:
     """Tests for model loading functionality."""
 
@@ -394,6 +424,67 @@ class TestStartupAndMonitoring:
         data = client.get("/metrics").json()
         assert "requests" in data
         assert "model" in data
+
+
+class TestMonitoringEndpoint:
+    """Tests for the live monitoring endpoint (/monitoring)."""
+
+    def test_monitoring_structure(self):
+        data = client.get("/monitoring").json()
+        assert data["buffer_capacity"] == 500
+        assert isinstance(data["predictions"], list)
+        assert isinstance(data["risk_counts"], dict)
+
+    def test_monitoring_records_predictions(self, synthetic_preprocessor):
+        with patch('api.main.model', mock_model(0.8, 1)):
+            with patch('api.main.preprocessor', synthetic_preprocessor):
+                before = client.get("/monitoring").json()["total_predictions"]
+                response = client.post("/predict", json={})
+                assert response.status_code == 200
+
+                data = client.get("/monitoring").json()
+                assert data["total_predictions"] == before + 1
+                last = data["predictions"][-1]
+                assert last["probability"] == 0.8
+                assert last["prediction"] == 1
+                assert last["risk_category"] in ("LOW_RISK", "MEDIUM_RISK", "HIGH_RISK")
+                assert "processing_time_ms" in last
+                assert "timestamp" in last
+                assert data["risk_counts"][last["risk_category"]] >= 1
+                assert data["avg_latency_ms"] is not None
+                assert data["min_latency_ms"] <= data["p95_latency_ms"] <= data["max_latency_ms"]
+
+    def test_model_exposes_feature_importances_key(self):
+        with patch('api.main.model', mock_model(0.8, 1)):
+            with patch('api.main.feature_names', ["f1", "f2"]):
+                data = client.get("/model").json()
+                assert "feature_importances" in data
+                assert isinstance(data["feature_importances"], list)
+
+
+class TestFormCoverage:
+    """Tests for the form-fields importance coverage computation."""
+
+    def test_coverage_fractional_attribution(self):
+        class FakeModel:
+            feature_importances_ = np.array([10.0, 5.0, 5.0])
+
+        feats = ["EXT_SOURCE_1", "AMT_CREDIT", "FLAG_OWN_CAR_Y"]
+        raw = ["EXT_SOURCE_1", "AMT_CREDIT", "FLAG_OWN_CAR"]
+        # EXT_SOURCE_1 and AMT_CREDIT are in TOP_FORM_FIELDS (15/20 of the gain),
+        # FLAG_OWN_CAR_Y (one-hot of FLAG_OWN_CAR, not in the top list) is not.
+        cov = compute_form_coverage(FakeModel(), feats, raw)
+        assert abs(cov - 75.0) < 0.1
+
+    def test_coverage_without_importances_returns_zero(self):
+        assert compute_form_coverage(object(), ["A"], ["A"]) == 0.0
+
+    def test_model_endpoint_serves_coverage(self):
+        with patch('api.main.model', mock_model(0.8, 1)):
+            with patch('api.main.feature_names', ["f1", "f2"]):
+                data = client.get("/model").json()
+                assert "form_coverage_pct" in data
+                assert data["form_coverage_pct"] is None or 0 <= data["form_coverage_pct"] <= 100
 
 
 class TestOpenAPISchema:

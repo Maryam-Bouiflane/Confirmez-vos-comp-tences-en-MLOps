@@ -21,9 +21,13 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy application code
 COPY streamlit_app/ ./streamlit_app/
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser \
-    && chown -R appuser:appuser /app/.venv
+# Create non-root user for security. No recursive chown on /app/.venv:
+# the process only reads the venv (root-owned files are world-readable),
+# and a chown -R over tens of thousands of files adds minutes to the build.
+RUN groupadd -r appuser && useradd -r -m -g appuser appuser
+# -m: create /home/appuser (owned by the user) so Streamlit can write
+# its session/installation files; usage stats are disabled below.
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 USER appuser
 
 # Set environment variables
