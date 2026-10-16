@@ -123,6 +123,24 @@ def call_api(endpoint: str, method: str = "GET", json: Optional[Dict] = None) ->
     except requests.exceptions.RequestException as e:
         st.error(f"❌ API Error: {str(e)}")
         st.error(f"URL: {url}")
+        # A 422 carries the exact offending field(s): show them instead of
+        # a bare status line the user cannot act on.
+        if (
+            isinstance(e, requests.exceptions.HTTPError)
+            and e.response is not None
+            and e.response.status_code == 422
+        ):
+            try:
+                detail = e.response.json().get("detail")
+            except ValueError:
+                detail = None
+            if detail:
+                issues = [
+                    f"{''.join(str(loc) for loc in d.get('loc', [])[1:])}: {d.get('msg')}"
+                    for d in detail
+                    if isinstance(d, dict)
+                ]
+                st.error("Invalid input -> " + "; ".join(issues))
         if isinstance(e, requests.exceptions.Timeout):
             st.info(
                 "The API may be waking up (Render free plan services sleep "
@@ -219,7 +237,28 @@ def render_field(field: Dict[str, Any], override: Any = None):
     else:
         default = override if override is not None else field.get("default")
         default = float(default) if default is not None else 0.0
-        return st.number_input(field["description"], value=default)
+        # Enforce the API's business ranges client-side: the widget cannot
+        # produce an out-of-range value, so /predict answers 200. Streamlit
+        # flags and rejects an out-of-range entry natively ("Number is
+        # outside the allowed range..."); the help tooltip below exposes
+        # the accepted range before the user makes the mistake.
+        min_value = field.get("min")
+        max_value = field.get("max")
+        if min_value is not None and max_value is not None:
+            help_text = f"Plage acceptée : {min_value:g} à {max_value:g}"
+        elif min_value is not None:
+            help_text = f"Valeur minimum : {min_value:g}"
+        elif max_value is not None:
+            help_text = f"Valeur maximum : {max_value:g}"
+        else:
+            help_text = None
+        return st.number_input(
+            field["description"],
+            value=default,
+            min_value=float(min_value) if min_value is not None else None,
+            max_value=float(max_value) if max_value is not None else None,
+            help=help_text,
+        )
 
 
 def build_dynamic_form(schema: Dict[str, Any],

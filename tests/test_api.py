@@ -181,6 +181,21 @@ class TestSchemaEndpoint:
             assert "group" in field
             assert "default" in field
 
+    def test_schema_exposes_business_ranges(self):
+        """Numeric fields carry the /predict constraints as min/max."""
+        by_name = {f["name"]: f for f in client.get("/schema").json()["fields"]}
+        assert by_name["EXT_SOURCE_1"]["min"] == 0
+        assert by_name["EXT_SOURCE_1"]["max"] == 1
+        assert by_name["DAYS_BIRTH"]["max"] == -6570
+        assert by_name["AMT_INCOME_TOTAL"]["min"] == 0
+        assert "max" not in by_name["AMT_INCOME_TOTAL"]
+        # One-sided constraint: min only, no upper bound
+        assert by_name["AMT_CREDIT"]["min"] == 0
+        assert "max" not in by_name["AMT_CREDIT"]
+        # Categorical fields carry no bounds
+        assert "min" not in by_name["CODE_GENDER"]
+        assert "max" not in by_name["NAME_EDUCATION_TYPE"]
+
 
 class TestHealthCheck:
     """Tests for the health check endpoint."""
