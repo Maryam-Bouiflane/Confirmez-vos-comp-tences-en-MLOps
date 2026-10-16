@@ -148,9 +148,19 @@ def fetch_schema(api_url: str) -> Dict[str, Any]:
     The schema is generated at training time (api/train_model.py) from the
     raw Home Credit columns: field types, form groups, defaults (training
     median/mode) and categorical choices.
+
+    A failing API (asleep on the Render free plan -> 502/429) must not
+    crash the whole app: return an empty dict and let the caller render
+    a clear error the user can retry from.
     """
-    result = call_api("/schema")
-    return result if isinstance(result, dict) and "fields" in result else {}
+    try:
+        result = call_api("/schema")
+        return result if isinstance(result, dict) and "fields" in result else {}
+    except Exception:
+        # Do not cache the failure: the API may come back once awake,
+        # and the user must be able to retry immediately.
+        fetch_schema.clear()
+        return {}
 
 
 @st.cache_data(ttl=300)
@@ -577,7 +587,8 @@ def main():
         if not schema:
             st.error(
                 "Could not load the input schema from the API (`/schema` endpoint). "
-                "Make sure the FastAPI backend is running and the model is loaded."
+                "On the Render free plan the API may be asleep (502/429): it "
+                "takes up to a minute to wake up — retry shortly."
             )
         else:
             # Re-seed the form with the last submitted values: st.form resets
