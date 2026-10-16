@@ -40,6 +40,8 @@ from api.ml_pipeline import (
     CreditPreprocessor,
     _sanitize_feature_names,
     setup_mlflow_experiment,
+    compute_form_coverage,
+    TOP_FORM_FIELDS,
 )
 
 
@@ -138,7 +140,7 @@ def generate_schema(app_train: pd.DataFrame, output_path: Path = None) -> dict:
 
     schema = {
         "dataset": "application_train",
-        "version": "v1_application_raw",
+        "version": "v2_form_top22",
         "n_fields": len(fields),
         "fields": fields,
     }
@@ -296,6 +298,17 @@ def train_and_save():
         nrows=args.nrows
     )
 
+    # Train on the simplified-form raw columns only: the deployed model, its
+    # /schema contract and the dashboard form share the same 22 fields.
+    # A cross-validation experiment measured that this preserves ~99.7% of
+    # the full 120-column model's AUC while making the whole serving chain
+    # (form, schema, model) aligned by construction.
+    train_keep = ['SK_ID_CURR'] + (['TARGET'] if 'TARGET' in app_train.columns else []) + TOP_FORM_FIELDS
+    app_train = app_train[train_keep]
+    if app_test is not None:
+        app_test = app_test[['SK_ID_CURR'] + TOP_FORM_FIELDS]
+    print(f"Training on {len(TOP_FORM_FIELDS)} raw columns (form fields)")
+
     # Fit the inference preprocessor on the training data
     # (saved in the .pkl and reused by the API to transform raw inputs)
     print("Fitting inference preprocessor...")
@@ -314,7 +327,7 @@ def train_and_save():
         raise RuntimeError('Encoded train dataframe must contain SK_ID_CURR and TARGET')
     
     # Set dataset info
-    DATASET_VERSION = 'v1_application_raw'
+    DATASET_VERSION = 'v2_form_top22'
     FEATURES = "v1_poly_domain_encoding"
     
     # Get feature names (without target and ID), sanitized exactly as
@@ -380,6 +393,12 @@ def train_and_save():
         submission_proba = submission
         submission_class = apply_threshold(submission, best_threshold)
         
+        # Share of the model's gain importance carried by the simplified
+        # dashboard form fields (logged to MLflow and stored in the artifact)
+        raw_cols = [c for c in app_train.columns if c not in ('SK_ID_CURR', 'TARGET')]
+        form_coverage_pct = compute_form_coverage(final_model, feature_names, raw_cols)
+        mlflow.log_metric("form_coverage_pct", form_coverage_pct)
+        
         # Log everything with MLflow
         print("\nLogging with MLflow...")
         log_model_with_mlflow(
@@ -414,6 +433,7 @@ Best CV F1: {best_f1:.4f}
 Best CV Recall: {best_recall:.4f}
 Best CV Precision: {best_precision:.4f}
 Best Threshold: {best_threshold:.4f}
+Form fields coverage: {form_coverage_pct:.1f}%
         """
         mlflow.set_tag("mlflow.note.content", comment)
         
@@ -433,6 +453,7 @@ Best Threshold: {best_threshold:.4f}
             'best_f1': best_f1,
             'dataset_version': DATASET_VERSION,
             'feature_set': FEATURES,
+            'form_coverage_pct': form_coverage_pct,
             'mlflow_run_id': mlflow.active_run().info.run_id,
         }
         

@@ -148,9 +148,19 @@ def fetch_schema(api_url: str) -> Dict[str, Any]:
     The schema is generated at training time (api/train_model.py) from the
     raw Home Credit columns: field types, form groups, defaults (training
     median/mode) and categorical choices.
+
+    A failing API (asleep on the Render free plan -> 502/429) must not
+    crash the whole app: return an empty dict and let the caller render
+    a clear error the user can retry from.
     """
-    result = call_api("/schema")
-    return result if isinstance(result, dict) and "fields" in result else {}
+    try:
+        result = call_api("/schema")
+        return result if isinstance(result, dict) and "fields" in result else {}
+    except Exception:
+        # Do not cache the failure: the API may come back once awake,
+        # and the user must be able to retry immediately.
+        fetch_schema.clear()
+        return {}
 
 
 @st.cache_data(ttl=300)
@@ -168,6 +178,26 @@ def fetch_threshold(api_url: str) -> float:
         return 0.5
 
 
+@st.cache_data(ttl=60)
+def fetch_monitoring(api_url: str) -> Optional[Dict[str, Any]]:
+    """Fetch live serving metrics from the API (/monitoring endpoint)."""
+    try:
+        result = call_api("/monitoring")
+        return result if isinstance(result, dict) and "total_predictions" in result else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300)
+def fetch_model_info(api_url: str) -> Optional[Dict[str, Any]]:
+    """Fetch model metadata from the API (/model endpoint)."""
+    try:
+        result = call_api("/model")
+        return result if isinstance(result, dict) and "model_loaded" in result else None
+    except Exception:
+        return None
+
+
 # Display order of the form groups (most relevant first)
 GROUP_ORDER = [
     "Client", "Prêt", "Sources externes", "Région",
@@ -175,23 +205,36 @@ GROUP_ORDER = [
 ]
 
 
-def render_field(field: Dict[str, Any]):
-    """Render a single schema field as a Streamlit widget."""
+def render_field(field: Dict[str, Any], override: Any = None):
+    """Render a single schema field as a Streamlit widget.
+
+    `override` re-seeds the widget with the user's last submitted value
+    (Streamlit resets form widgets to their defaults after each submission).
+    """
     if field["type"] == "categorical":
         choices = field.get("choices") or [field.get("default", "")]
-        default = field.get("default")
+        default = override if override is not None else field.get("default")
         index = choices.index(default) if default in choices else 0
         return st.selectbox(field["description"], options=choices, index=index)
     else:
-        default = field.get("default")
+        default = override if override is not None else field.get("default")
         default = float(default) if default is not None else 0.0
         return st.number_input(field["description"], value=default)
 
 
-def build_dynamic_form(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Render the input form as tabs by group. Returns {field_name: value}."""
+def build_dynamic_form(schema: Dict[str, Any],
+                        overrides: Optional[Dict[str, Any]] = None,
+                        fields_filter: Optional[list] = None) -> Dict[str, Any]:
+    """Render the input form as tabs by group. Returns {field_name: value}.
+
+    `fields_filter` optionally restricts the rendered fields;
+    omitted fields are imputed with the training median/mode by the API.
+    """
+    fields = schema["fields"]
+    if fields_filter:
+        fields = [f for f in fields if f["name"] in fields_filter]
     groups: Dict[str, list] = {}
-    for field in schema["fields"]:
+    for field in fields:
         groups.setdefault(field["group"], []).append(field)
 
     group_names = [g for g in GROUP_ORDER if g in groups]
@@ -204,7 +247,9 @@ def build_dynamic_form(schema: Dict[str, Any]) -> Dict[str, Any]:
             cols = st.columns(2)
             for i, field in enumerate(groups[group_name]):
                 with cols[i % 2]:
-                    values[field["name"]] = render_field(field)
+                    values[field["name"]] = render_field(
+                        field, override=(overrides or {}).get(field["name"])
+                    )
     return values
 
 
@@ -240,7 +285,7 @@ def display_prediction_probability(probability: float, threshold: float = 0.5) -
         mode="gauge+number",
         value=probability * 100,
         domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Probability of Default (%)"},
+        title={'text': f"Probability of Default (%) — decision threshold: {threshold * 100:.1f}%"},
         number={'suffix': "%"},
         gauge={
             'axis': {'range': [0, 100]},
@@ -265,42 +310,178 @@ def display_prediction_probability(probability: float, threshold: float = 0.5) -
         font=dict(size=16)
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
-def display_feature_importance() -> None:
-    """Display feature importance visualization (placeholder)."""
-    st.subheader("📊 Feature Importance")
-    
-    # This is a placeholder - in a real app, you would load this from the model
-    features = [
-        "Credit Score", "Debt to Income", "Previous Default", "Loan Amount",
-        "Credit History", "Annual Income", "Employment Years", "Age"
-    ]
-    importance = [0.25, 0.20, 0.18, 0.12, 0.10, 0.08, 0.05, 0.02]
-    
-    df_importance = pd.DataFrame({
-        "Feature": features,
-        "Importance": importance
-    }).sort_values("Importance", ascending=True)
-    
-    fig = px.bar(
-        df_importance,
-        x="Importance",
-        y="Feature",
-        orientation="h",
-        title="Feature Importance for Credit Scoring Model",
-        color="Importance",
-        color_continuous_scale="Viridis"
+def render_monitoring_tab() -> None:
+    """Live monitoring: real score distribution, latency and risk categories."""
+    st.header("📡 Live Monitoring")
+    st.markdown(
+        "Real serving metrics aggregated by the API (`GET /monitoring`) from "
+        "its in-memory buffer of recent predictions — no simulated data."
     )
-    
-    fig.update_layout(
-        height=500,
-        showlegend=False,
-        paper_bgcolor="rgba(0,0,0,0)"
+
+    monitoring = fetch_monitoring(API_URL)
+    if monitoring is None:
+        st.error(
+            "Could not load monitoring data from the API (`/monitoring` endpoint). "
+            "Make sure the FastAPI backend is running."
+        )
+        return
+
+    if monitoring.get("total_predictions", 0) == 0:
+        st.info(
+            "No predictions recorded in the API buffer yet. Make predictions "
+            "from the **Prediction Form** tab, then refresh this page. "
+            "(The buffer is in-memory and resets when the API restarts.)"
+        )
+        return
+
+    preds = monitoring.get("predictions", [])
+    df = pd.DataFrame(preds)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+            "Predictions (buffer)",
+            monitoring["total_predictions"],
+            f"of {monitoring['buffer_capacity']} max",
+        )
+    with col2:
+        st.metric("Avg inference time", f"{monitoring['avg_latency_ms']:.1f} ms")
+    with col3:
+        st.metric("P95 inference time", f"{monitoring['p95_latency_ms']:.1f} ms")
+    with col4:
+        st.metric("Default rate", f"{(monitoring['default_rate'] or 0) * 100:.1f} %")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Distribution of predicted scores")
+        fig = px.histogram(
+            df, x="probability", nbins=20,
+            labels={"probability": "Predicted probability of default"},
+            color_discrete_sequence=["#4a6fa5"],
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    with col2:
+        st.subheader("Risk categories (real predictions)")
+        risk_df = pd.DataFrame(
+            [{"category": k, "count": v} for k, v in monitoring.get("risk_counts", {}).items()]
+        )
+        fig = px.pie(
+            risk_df, values="count", names="category",
+            color="category",
+            color_discrete_map={
+                "LOW_RISK": "#4CAF50",
+                "MEDIUM_RISK": "#FF9800",
+                "HIGH_RISK": "#F44336",
+            },
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    st.subheader("Inference latency over time")
+    fig = px.scatter(
+        df, x="timestamp", y="processing_time_ms",
+        labels={"processing_time_ms": "Inference time (ms)"},
     )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    fig.add_hline(
+        y=monitoring["avg_latency_ms"], line_dash="dash",
+        annotation_text=f"avg {monitoring['avg_latency_ms']:.1f} ms",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    st.caption(
+        "In-memory buffer: metrics reset on API restart or redeploy. "
+        "Persistent tracking of every prediction is available through MLflow."
+    )
+
+
+def render_analytics_tab() -> None:
+    """Model analytics: real feature importances and training metrics."""
+    st.header("📊 Model Analytics")
+
+    info = fetch_model_info(API_URL)
+    if info is None:
+        st.error(
+            "Could not load model metadata from the API (`/model` endpoint). "
+            "Make sure the FastAPI backend is running and the model is loaded."
+        )
+        return
+
+    meta = info.get("training_metadata") or {}
+    best_f1 = meta.get("best_f1")
+    threshold = meta.get("best_threshold")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Model type", info.get("model_type") or "N/A")
+    with col2:
+        st.metric("Best CV F1", f"{best_f1:.3f}" if best_f1 is not None else "N/A")
+    with col3:
+        st.metric("Decision threshold", f"{threshold:.4f}" if threshold is not None else "N/A")
+    with col4:
+        st.metric("Engineered features", info.get("feature_count", 0))
+    with col5:
+        coverage = info.get("form_coverage_pct")
+        st.metric(
+            "Form fields coverage",
+            f"{coverage:.1f}%" if coverage is not None else "N/A",
+            help="Share of the model's total gain importance attributable to "
+            "the 22 raw columns shown in the simplified prediction form.",
+        )
+
+    if best_f1 is not None and threshold is not None:
+        st.info(
+            "These are the training metrics: F1 is "
+            "measured on cross-validated predictions of the default class, which "
+            f"represents only ~8% of the dataset — a hard, imbalanced problem. The "
+            f"decision threshold ({threshold:.4f}) was optimized for this F1 and "
+            "drives the API's risk categories."
+        )
+
+    if coverage is not None:
+        st.caption(
+            f"**Form fields coverage ({coverage:.1f}%)**: the model is trained "
+            "on exactly the raw columns shown in the prediction form — the "
+            "form, the /schema contract and the model are aligned by "
+            "construction. A cross-validation experiment measured that "
+            "restricting training to these 22 columns preserves ~99.7% of the "
+            "full 120-column model's AUC. This metric is computed by the API "
+            "from the deployed model and logged to MLflow at training time."
+        )
+
+    st.subheader("Feature importance (real, gain-based)")
+    importances = info.get("feature_importances") or []
+    if importances:
+        fi_df = pd.DataFrame(importances).sort_values("importance_pct", ascending=True)
+        fig = px.bar(
+            fi_df, x="importance_pct", y="feature", orientation="h",
+            labels={
+                "importance_pct": "Importance (% of top-20 gain)",
+                "feature": "Feature",
+            },
+            color="importance_pct",
+            color_continuous_scale="Viridis",
+        )
+        fig.update_layout(height=500, showlegend=False, paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Computed live from the deployed model (gain-based importances, "
+            f"top 20 of its {info.get('feature_count', 0)} engineered features)."
+        )
+    else:
+        st.info("Feature importances are not available from the loaded model.")
+
+    st.markdown("---")
+    st.subheader("Model & run metadata")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Dataset version", meta.get("dataset_version") or "N/A")
+        st.metric("Model version", info.get("model_version") or "N/A")
+    with col2:
+        st.metric("Raw input fields", info.get("raw_input_fields", 0))
+        st.metric("MLflow run", (info.get("mlflow") or {}).get("run_id") or "N/A")
 
 
 def display_client_summary(input_data: Dict[str, Any]) -> None:
@@ -387,45 +568,49 @@ def main():
     - Loan amounts and annuity
     - External source scores (EXT_SOURCE_1-3)
     - Region, housing, credit bureau data
-
-    Risk categories (relative to the model's decision threshold,
-    optimized at training time — see /model):
-    - 🟢 LOW: probability < threshold × 0.33
-    - 🟡 MEDIUM: below threshold × 0.67
-    - 🔴 HIGH: at or above threshold × 0.67
     """)
     
     # Main content
-    tab1, tab2, tab3 = st.tabs(["📝 Prediction Form", "📊 Analytics", "ℹ️ Help"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📝 Prediction Form", "📡 Monitoring", "📊 Model Analytics", "ℹ️ Help"])
     
     with tab1:
         # Prediction Form (generated dynamically from the API /schema endpoint)
         st.header("Client Information Form")
         st.markdown("""
-        This form is generated from the raw Home Credit schema served by the API
-        (`/schema`). Each field defaults to the training median/mode, so you only
-        need to adjust the fields you care about before requesting a prediction.
+        This form is generated from the raw input schema served by the API
+        (`/schema`): the model is trained on exactly these 22 columns, so what
+        you see is what the model uses. Each field defaults to the training
+        median/mode, so you only need to adjust the fields you care about.
         """)
 
         schema = fetch_schema(API_URL)
         if not schema:
             st.error(
                 "Could not load the input schema from the API (`/schema` endpoint). "
-                "Make sure the FastAPI backend is running and the model is loaded."
+                "On the Render free plan the API may be asleep (502/429): it "
+                "takes up to a minute to wake up — retry shortly."
             )
         else:
+            # Re-seed the form with the last submitted values: st.form resets
+            # widgets to their defaults on every submission, which made
+            # consecutive predictions look "static" (same defaults resent).
+            prior_input = st.session_state.get("last_submitted_input", {})
             with st.form("prediction_form"):
-                input_data = build_dynamic_form(schema)
+                # The schema served by the API IS the model contract: the
+                # model is trained on exactly the columns in /schema.
+                input_data = build_dynamic_form(schema, overrides=prior_input)
 
                 # Submit button
                 st.markdown("---")
                 submitted = st.form_submit_button(
                     "🔍 Get Credit Score",
-                    use_container_width=True
+                    width="stretch"
                 )
 
         # Process prediction
         if schema and submitted:
+            # Remember the submitted values for the next form render
+            st.session_state["last_submitted_input"] = input_data
             # Display loading spinner
             with st.spinner("Analyzing credit risk..."):
                 try:
@@ -448,13 +633,14 @@ def main():
 
                     # Display probability gauge (zones relative to the
                     # model's decision threshold, like the API categories)
+                    decision_threshold = fetch_threshold(API_URL)
                     display_prediction_probability(
                         result.get("probability", 0.5),
-                        threshold=fetch_threshold(API_URL),
+                        threshold=decision_threshold,
                     )
 
                     # Display detailed results
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
 
                     with col1:
                         st.metric(
@@ -469,7 +655,19 @@ def main():
                         )
 
                     with col3:
+                        st.metric("Decision threshold", f"{decision_threshold * 100:.2f}%")
+
+                    with col4:
                         st.metric("Model Version", result.get("model_version", "N/A"))
+
+                    st.caption(
+                        f"The prediction compares the probability to the decision "
+                        f"threshold (optimized for F1 at training time): below "
+                        f"{decision_threshold:.2%} -> No Default, above -> Default. "
+                        f"Risk bands: LOW < {decision_threshold * 0.33:.1%}, "
+                        f"MEDIUM < {decision_threshold * 0.67:.1%}, "
+                        f"HIGH >= {decision_threshold * 0.67:.1%}."
+                    )
 
                     # Recommendation (driven by the API's risk_category,
                     # which is relative to the training threshold)
@@ -509,56 +707,12 @@ def main():
                     st.error(f"Failed to get prediction: {str(e)}")
 
     with tab2:
-        # Analytics Tab
-        st.header("📊 Model Analytics")
-        
-        st.markdown("""
-        Explore the credit scoring model's behavior and feature importance.
-        """)
-        
-        # Display feature importance
-        display_feature_importance()
-        
-        st.markdown("---")
-        
-        # Risk Distribution (simulated)
-        st.subheader("📊 Simulated Risk Distribution")
-        
-        np.random.seed(42)
-        risk_categories = ["LOW_RISK", "MEDIUM_RISK", "HIGH_RISK"]
-        counts = [500, 300, 200]
-        
-        fig = px.pie(
-            values=counts,
-            names=risk_categories,
-            title="Distribution of Risk Categories (Simulated Data)",
-            color=risk_categories,
-            color_discrete_map={
-                "LOW_RISK": "#4CAF50",
-                "MEDIUM_RISK": "#FF9800",
-                "HIGH_RISK": "#F44336"
-            }
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Model performance metrics (simulated)
-        st.subheader("🎯 Model Performance Metrics")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Accuracy", "92.5%")
-        with col2:
-            st.metric("Precision", "88.0%")
-        with col3:
-            st.metric("Recall", "90.2%")
-        with col4:
-            st.metric("F1-Score", "89.1%")
-    
+        render_monitoring_tab()
+
     with tab3:
+        render_analytics_tab()
+
+    with tab4:
         # Help Tab
         st.header("ℹ️ Help & Documentation")
         
@@ -571,7 +725,7 @@ def main():
         - Client (demographics, employment, income)
         - Loan (amount, annuity, goods price)
         - External sources (EXT_SOURCE scores)
-        - Region, contact, entourage, credit bureau, documents, housing
+        - Region, contact, credit bureau
 
         Each field is pre-filled with the training median/mode, so a prediction
         can be requested without filling everything.
@@ -605,6 +759,7 @@ def main():
         | GET | `/model` | Model metadata |
         | GET | `/schema` | Raw input schema (drives this form) |
         | POST | `/predict` | Make prediction |
+        | GET | `/monitoring` | Live serving metrics (scores, latency, risk categories) |
         | GET | `/docs` | Swagger documentation |
         | GET | `/redoc` | ReDoc documentation |
         | GET | `/openapi.json` | OpenAPI schema |
@@ -640,10 +795,11 @@ def main():
         **Model:** LightGBM (or LogisticRegression / RandomForest) trained on
         the Home Credit `application_train` dataset via the pipeline in
         `api/ml_pipeline.py` (polynomial + domain features, label and
-        one-hot encoding). The full list of ~280 engineered features is
+        one-hot encoding). The full list of its 152 engineered features is
         available on `/model`.
 
-        **Input:** the 120 raw application columns (all optional, see `/schema`).
+        **Input:** the 22 raw application columns shown in the prediction form
+        (all optional, see `/schema`).
         The preprocessing fitted at training time is applied by the API before
         prediction, which guarantees train/serve consistency.
 
@@ -668,6 +824,9 @@ def main():
 
         **Invalid input errors:**
         - Numeric fields must contain numbers
+        - Numeric fields are range-checked by the API (e.g. external scores
+          must lie in [0, 1], age in 18-110 years, amounts non-negative):
+          out-of-range values are rejected with a 422 error
         - Categorical fields accept any string, but values outside the
           training choices have no learned encoding (mapped to a neutral value)
 

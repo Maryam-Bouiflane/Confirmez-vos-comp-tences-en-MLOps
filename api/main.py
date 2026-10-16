@@ -13,10 +13,12 @@ MLflow Integration:
 import logging
 import json
 import os
+import threading
 import time
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast
 
 import joblib
 import numpy as np
@@ -26,7 +28,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, create_model
 
-from api.ml_pipeline import setup_mlflow_experiment
+from api.ml_pipeline import setup_mlflow_experiment, compute_form_coverage
 
 
 # Configure logging
@@ -64,6 +66,76 @@ model_metadata = None
 
 
 # ============================================================================
+# In-Memory Monitoring Buffer (served on GET /monitoring)
+# ============================================================================
+
+# Ring buffer of recent predictions. In-memory only: reset on restart or
+# redeploy (no persistent disk on the Render free plan). This powers the
+# dashboard's monitoring tab with real serving data.
+MONITORING_BUFFER_SIZE = 500
+_recent_predictions: deque = deque(maxlen=MONITORING_BUFFER_SIZE)
+_prediction_lock = threading.Lock()
+
+
+def record_prediction(probability: float, prediction: int,
+                      risk_category: str, processing_time_ms: float) -> None:
+    """Append a prediction to the in-memory monitoring buffer."""
+    with _prediction_lock:
+        _recent_predictions.append({
+            "probability": round(float(probability), 4),
+            "prediction": int(prediction),
+            "risk_category": risk_category,
+            "processing_time_ms": round(float(processing_time_ms), 2),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+def _percentile(sorted_values: List[float], p: float) -> float:
+    """Linear-interpolated percentile on an already-sorted list."""
+    if not sorted_values:
+        return 0.0
+    k = (len(sorted_values) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(sorted_values) - 1)
+    if f == c:
+        return sorted_values[f]
+    return sorted_values[f] + (sorted_values[c] - sorted_values[f]) * (k - f)
+
+
+def get_feature_importances(top_n: int = 20) -> List[Dict[str, Any]]:
+    """Extract the model's real feature importances (top N).
+
+    Works for LightGBM (gain-based importances via booster_) and estimators
+    exposing feature_importances_ (e.g. RandomForest). Returns [] when the
+    loaded model exposes no importance information.
+    """
+    if model is None or not feature_names:
+        return []
+    try:
+        importances = None
+        if hasattr(model, "booster_") and hasattr(model.booster_, "feature_importance"):
+            importances = model.booster_.feature_importance(importance_type="gain")
+        elif hasattr(model, "feature_importances_"):
+            importances = model.feature_importances_
+        if importances is None:
+            return []
+        importances = list(map(float, importances))
+        if len(importances) != len(feature_names):
+            logger.warning("Feature importances length mismatch: skipping")
+            return []
+        pairs = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)[:top_n]
+        total = sum(v for _, v in pairs) or 1.0
+        return [
+            {"feature": name, "importance": round(value, 4),
+             "importance_pct": round(100.0 * value / total, 2)}
+            for name, value in pairs
+        ]
+    except Exception as e:
+        logger.warning(f"Could not extract feature importances: {e}")
+        return []
+
+
+# ============================================================================
 # MLflow Configuration
 # ============================================================================
 
@@ -72,7 +144,7 @@ model_metadata = None
 KEY_PARAMS = [
     "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY", "AMT_GOODS_PRICE",
     "DAYS_BIRTH", "DAYS_EMPLOYED", "EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
-    "CODE_GENDER", "CNT_CHILDREN", "CNT_FAM_MEMBERS",
+    "CODE_GENDER", "CNT_CHILDREN",
     "NAME_INCOME_TYPE", "NAME_EDUCATION_TYPE", "NAME_FAMILY_STATUS",
     "OCCUPATION_TYPE", "ORGANIZATION_TYPE", "OWN_CAR_AGE", "REGION_RATING_CLIENT",
 ]
@@ -128,18 +200,55 @@ def log_prediction_to_mlflow(input_data: Dict[str, Any],
 # Pydantic Models
 # ============================================================================
 
+# Business ranges for the raw numeric fields. Constraints are enforced by
+# Pydantic only when the field is provided in a request (all fields stay
+# optional: omitted fields are imputed with the training median/mode).
+# Bounds follow the Home Credit application_train distributions plus
+# common sense (a borrower must be of legal age, external scores are
+# normalized in [0, 1], amounts cannot be negative...).
+NUMERIC_CONSTRAINTS: Dict[str, Dict[str, float]] = {
+    "DAYS_BIRTH": {"ge": -40015, "le": -6570},      # age 18-110 years (days, negative)
+    "DAYS_EMPLOYED": {"ge": -35000, "le": 365243},  # 365243 = pensioner placeholder
+    "CNT_CHILDREN": {"ge": 0, "le": 20},
+    "AMT_INCOME_TOTAL": {"ge": 0},
+    "AMT_CREDIT": {"ge": 0},
+    "AMT_ANNUITY": {"ge": 0},
+    "AMT_GOODS_PRICE": {"ge": 0},
+    "EXT_SOURCE_1": {"ge": 0, "le": 1},
+    "EXT_SOURCE_2": {"ge": 0, "le": 1},
+    "EXT_SOURCE_3": {"ge": 0, "le": 1},
+    "OWN_CAR_AGE": {"ge": 0, "le": 100},
+    "DAYS_ID_PUBLISH": {"ge": -30000, "le": 0},
+    "DAYS_LAST_PHONE_CHANGE": {"ge": -5000, "le": 0},
+    "AMT_REQ_CREDIT_BUREAU_YEAR": {"ge": 0, "le": 50},
+    "REGION_RATING_CLIENT": {"ge": 1, "le": 3},
+}
+
+
 def _build_prediction_input(fields: List[Dict[str, Any]]):
     """Build the Pydantic input model dynamically from the raw schema.
 
     All fields are optional: any field omitted in a request is filled with
     the training median (numeric) or mode (categorical) before prediction.
+    Numeric fields listed in NUMERIC_CONSTRAINTS carry business range
+    constraints (ge/le): out-of-range values are rejected with a 422 before
+    reaching the model.
     """
     attrs: Dict[str, Any] = {}
     for f in fields:
         if f["type"] == "categorical":
             attrs[f["name"]] = (Optional[str], Field(default=None, description=f["description"]))
         else:
-            attrs[f["name"]] = (Optional[float], Field(default=None, description=f["description"]))
+            attrs[f["name"]] = (
+                Optional[float],
+                Field(
+                    default=None,
+                    description=f["description"],
+                    # typed as Any: mypy cannot match Field's overloads when
+                    # unpacking the constraint dict
+                    **cast(Dict[str, Any], NUMERIC_CONSTRAINTS.get(f["name"], {})),
+                ),
+            )
     return create_model("PredictionInput", **attrs)
 
 
@@ -175,6 +284,19 @@ class HealthCheckOutput(BaseModel):
     model_type: Optional[str] = Field(None, description="Type of the loaded model")
     mlflow_run_id: Optional[str] = Field(None, description="MLflow run ID")
     feature_count: Optional[int] = Field(None, description="Number of features")
+
+
+class MonitoringOutput(BaseModel):
+    """Live serving metrics from the in-memory prediction buffer."""
+    total_predictions: int = Field(..., description="Predictions currently in the buffer")
+    buffer_capacity: int = Field(..., description="Maximum records kept in memory")
+    avg_latency_ms: Optional[float] = Field(None, description="Average inference time (ms)")
+    p95_latency_ms: Optional[float] = Field(None, description="95th percentile inference time (ms)")
+    min_latency_ms: Optional[float] = Field(None, description="Fastest inference (ms)")
+    max_latency_ms: Optional[float] = Field(None, description="Slowest inference (ms)")
+    default_rate: Optional[float] = Field(None, description="Fraction of predictions flagged as default")
+    risk_counts: Dict[str, int] = Field(default_factory=dict, description="Predictions per risk category")
+    predictions: List[Dict[str, Any]] = Field(default_factory=list, description="Recent prediction records")
 
 
 # ============================================================================
@@ -213,6 +335,7 @@ def load_model(model_path: str) -> tuple:
                 'best_threshold': model_data.get('best_threshold'),
                 'best_f1': model_data.get('best_f1'),
                 'dataset_version': model_data.get('dataset_version'),
+                'form_coverage_pct': model_data.get('form_coverage_pct'),
                 'feature_set': model_data.get('feature_set'),
                 'mlflow_run_id': mlflow_run_id,
             }
@@ -388,6 +511,16 @@ async def get_model_info():
         "feature_count": len(feature_names) if feature_names else 0,
         "features": feature_names,
         "raw_input_fields": len(RAW_FIELDS),
+        "feature_importances": get_feature_importances(),
+        # Share of the model's gain importance carried by the simplified
+        # dashboard form fields. From the artifact metadata when present
+        # (logged at training time), computed live from the loaded model
+        # otherwise (e.g. artifacts trained before this field existed).
+        "form_coverage_pct": (
+            model_metadata.get("form_coverage_pct")
+            if model_metadata and model_metadata.get("form_coverage_pct") is not None
+            else compute_form_coverage(model, feature_names, [f["name"] for f in RAW_FIELDS])
+        ),
         "mlflow": {
             "tracking_uri": MLFLOW_TRACKING_URI,
             "experiment": MLFLOW_EXPERIMENT,
@@ -395,6 +528,42 @@ async def get_model_info():
         },
         "training_metadata": model_metadata
     }
+
+
+@app.get("/monitoring", response_model=MonitoringOutput, tags=["monitoring"])
+async def get_monitoring():
+    """Live serving metrics: score distribution, inference latency, risk categories.
+
+    Computed from the in-memory buffer of recent predictions. The buffer is
+    reset on restart/redeploy (no persistent disk on the Render free plan);
+    persistent tracking is available through MLflow.
+    """
+    with _prediction_lock:
+        records = list(_recent_predictions)
+
+    if not records:
+        return MonitoringOutput(
+            total_predictions=0,
+            buffer_capacity=MONITORING_BUFFER_SIZE,
+        )
+
+    latencies = sorted(r["processing_time_ms"] for r in records)
+    risk_counts: Dict[str, int] = {}
+    for r in records:
+        risk_counts[r["risk_category"]] = risk_counts.get(r["risk_category"], 0) + 1
+    n_defaults = sum(1 for r in records if r["prediction"] == 1)
+
+    return MonitoringOutput(
+        total_predictions=len(records),
+        buffer_capacity=MONITORING_BUFFER_SIZE,
+        avg_latency_ms=round(sum(latencies) / len(latencies), 2),
+        p95_latency_ms=round(_percentile(latencies, 95), 2),
+        min_latency_ms=round(latencies[0], 2),
+        max_latency_ms=round(latencies[-1], 2),
+        default_rate=round(n_defaults / len(records), 4),
+        risk_counts=risk_counts,
+        predictions=records,
+    )
 
 
 @app.post("/predict", 
@@ -448,6 +617,14 @@ async def predict(input_data: PredictionInput):
             risk_category = "HIGH_RISK"
         
         processing_time = time.time() - start_time
+        
+        # Record for the in-memory monitoring buffer (GET /monitoring)
+        record_prediction(
+            probability=probability,
+            prediction=int(prediction),
+            risk_category=risk_category,
+            processing_time_ms=processing_time * 1000,
+        )
         
         # Log to MLflow
         log_prediction_to_mlflow(

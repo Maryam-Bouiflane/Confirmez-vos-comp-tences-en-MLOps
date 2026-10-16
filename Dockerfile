@@ -42,6 +42,7 @@ COPY api/ ./api/
 RUN mkdir -p /app/tracking && chown apiuser:apiuser /app/tracking
 
 # Set environment variables
+ENV MPLCONFIGDIR=/tmp/matplotlib
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MODEL_PATH=/app/api/models/credit_scoring_model.pkl
