@@ -558,12 +558,6 @@ def main():
     - Loan amounts and annuity
     - External source scores (EXT_SOURCE_1-3)
     - Region, housing, credit bureau data
-
-    Risk categories (relative to the model's decision threshold,
-    optimized at training time — see /model):
-    - 🟢 LOW: probability < threshold × 0.33
-    - 🟡 MEDIUM: below threshold × 0.67
-    - 🔴 HIGH: at or above threshold × 0.67
     """)
     
     # Main content
