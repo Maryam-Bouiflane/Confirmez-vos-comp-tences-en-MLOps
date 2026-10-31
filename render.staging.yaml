@@ -30,6 +30,14 @@ services:
         value: /app/api/models/credit_scoring_model.pkl
       # Separate experiment so staging predictions never mix with
       # production logs; /tmp is ephemeral on Render anyway.
+      - key: INFERENCE_ENGINE
+        # 512MB free plan: keeping BOTH the unpickled LightGBM booster AND
+        # the ONNX Runtime session in memory exceeds the plan limit (OOM at
+        # startup, observed on staging). The engine falls back to LightGBM;
+        # ONNX stays available locally and on plans with more RAM. The other
+        # optimizations (async MLflow logging, warm-up, single-pass) are
+        # memory-neutral and remain active.
+        value: lightgbm
       - key: MLFLOW_TRACKING_URI
         value: sqlite:////tmp/mlflow.db
       - key: MLFLOW_EXPERIMENT

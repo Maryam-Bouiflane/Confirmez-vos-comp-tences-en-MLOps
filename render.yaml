@@ -33,6 +33,14 @@ services:
       # non-root user can write it; /tmp is ephemeral on Render anyway.
       # For persistent tracking, set MLFLOW_TRACKING_URI to a remote
       # server in the Render dashboard (secret), not in this file.
+      - key: INFERENCE_ENGINE
+        # 512MB free plan: keeping BOTH the unpickled LightGBM booster AND
+        # the ONNX Runtime session in memory exceeds the plan limit (OOM at
+        # startup, observed on staging). The engine falls back to LightGBM;
+        # ONNX stays available locally and on plans with more RAM. The other
+        # optimizations (async MLflow logging, warm-up, single-pass) are
+        # memory-neutral and remain active.
+        value: lightgbm
       - key: MLFLOW_TRACKING_URI
         value: sqlite:////tmp/mlflow.db
       - key: MLFLOW_EXPERIMENT
