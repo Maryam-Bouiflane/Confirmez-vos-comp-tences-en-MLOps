@@ -1,0 +1,65 @@
+{
+  "label": "optimized",
+  "generated_at": "2026-10-23T13:13:12.107404+00:00",
+  "n_payloads": 200,
+  "model_path": {
+    "cold_first_call_ms": 67.672,
+    "phases": {
+      "build_frame": {
+        "n": 200,
+        "mean_ms": 2.011,
+        "p50_ms": 1.846,
+        "p95_ms": 3.61,
+        "max_ms": 11.009
+      },
+      "preprocessor": {
+        "n": 200,
+        "mean_ms": 27.223,
+        "p50_ms": 28.437,
+        "p95_ms": 39.182,
+        "max_ms": 53.487
+      },
+      "lightgbm_double": {
+        "n": 200,
+        "mean_ms": 64.2,
+        "p50_ms": 65.64,
+        "p95_ms": 87.115,
+        "max_ms": 109.522
+      },
+      "lightgbm_single": {
+        "n": 200,
+        "mean_ms": 33.175,
+        "p50_ms": 32.697,
+        "p95_ms": 48.512,
+        "max_ms": 106.083
+      },
+      "onnx_single": {
+        "n": 200,
+        "mean_ms": 1.774,
+        "p50_ms": 0.673,
+        "p95_ms": 7.885,
+        "max_ms": 41.712
+      }
+    },
+    "cprofile_top": "         3060302 function calls (2972502 primitive calls) in 3.581 seconds\n\n   Ordered by: cumulative time\n   List reduced from 872 to 18 due to restriction <18>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.005    0.005    3.582    3.582 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\monitoring\\profile_inference.py:116(_loop)\n      100    0.018    0.000    2.761    0.028 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\api\\ml_pipeline.py:922(transform)\n      100    0.009    0.000    0.646    0.006 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\sklearn.py:1615(predict_proba)\n      100    0.004    0.000    0.633    0.006 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\sklearn.py:1093(predict)\n      100    0.006    0.000    0.606    0.006 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\reshape\\encoding.py:44(get_dummies)\n      100    0.001    0.000    0.552    0.006 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\frame.py:10197(apply)\n      100    0.003    0.000    0.549    0.005 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\apply.py:864(apply)\n      100    0.000    0.000    0.545    0.005 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\apply.py:1061(apply_standard)\n      100    0.001    0.000    0.507    0.005 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\basic.py:4701(predict)\n      100    0.002    0.000    0.489    0.005 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\basic.py:1100(predict)\n      600    0.026    0.000    0.454    0.001 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\reshape\\encoding.py:239(_get_dummies_1d)\n      900    0.011    0.000    0.414    0.000 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\frame.py:698(__init__)\n4900/4700    0.055    0.000    0.413    0.000 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\series.py:392(__init__)\n  200/100    0.001    0.000    0.398    0.004 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\sklearn\\utils\\_set_output.py:317(wrapped)\n      100    0.001    0.000    0.397    0.004 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\sklearn\\base.py:913(fit_transform)\n      100    0.011    0.000    0.362    0.004 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\pandas\\core\\apply.py:1070(apply_series_generator)\n      100    0.001    0.000    0.342    0.003 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\basic.py:1327(__pred_for_np2d)\n      100    0.335    0.003    0.342    0.003 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\lightgbm\\basic.py:1286(__inner_predict_np2d)\n\n\n"
+  },
+  "request_level": {
+    "first_request_ms": 49.358,
+    "request_total": {
+      "n": 199,
+      "mean_ms": 27.385,
+      "p50_ms": 26.736,
+      "p95_ms": 38.86,
+      "max_ms": 50.627
+    },
+    "processing_time_ms": {
+      "n": 199,
+      "mean_ms": 20.748,
+      "p50_ms": 19.49,
+      "p95_ms": 30.942,
+      "max_ms": 37.93
+    },
+    "overhead_mean_ms": 6.637,
+    "cprofile_top": "         993852 function calls (964452 primitive calls) in 3.094 seconds\n\n   Ordered by: cumulative time\n   List reduced from 3071 to 20 due to restriction <20>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n      150    0.001    0.000    1.686    0.011 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\routing.py:662(app)\n      150    0.001    0.000    1.530    0.010 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\routing.py:267(handle)\n      150    0.001    0.000    1.274    0.008 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\fastapi\\routing.py:110(app)\n      150    0.002    0.000    1.217    0.008 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\fastapi\\routing.py:113(app)\n       60    0.002    0.000    1.095    0.018 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\fastapi\\routing.py:382(app)\n   149/61    0.001    0.000    1.024    0.017 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\middleware\\base.py:139(coro)\n       30    0.001    0.000    0.994    0.033 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\fastapi\\routing.py:320(run_endpoint_function)\n       30    0.002    0.000    0.989    0.033 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\api\\main.py:577(prepare_input_data)\n   149/61    0.001    0.000    0.972    0.016 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\middleware\\cors.py:78(__call__)\n   149/61    0.001    0.000    0.912    0.015 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\middleware\\exceptions.py:47(__call__)\n   299/61    0.001    0.000    0.911    0.015 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\_exception_handler.py:31(wrapped_app)\n   149/61    0.001    0.000    0.896    0.015 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\fastapi\\middleware\\asyncexitstack.py:15(__call__)\n   149/61    0.001    0.000    0.895    0.015 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\starlette\\routing.py:656(__call__)\n       30    0.006    0.000    0.891    0.030 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\api\\ml_pipeline.py:922(transform)\n       30    0.003    0.000    0.765    0.026 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\api\\main.py:835(predict)\n       30    0.001    0.000    0.758    0.025 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\api\\main.py:150(predict_probability)\n       30    0.050    0.002    0.590    0.020 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime_inference_collection.py:372(run)\n       84    0.001    0.000    0.540    0.006 C:\\Users\\mb_pe\\Documents\\MARYAM\\etudes\\OpenClassrooms\\Projets\\Projet 8\\Confirmez vos comp\u00e9tences en MLOps\\.venv\\Lib\\site-packages\\sqlalchemy\\orm\\session.py:2312(execute)\n       90    0.001    0.000    0.498    0.006 C:\\Users\\mb_pe\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\asyncio\\proactor_events.py:792(_loop_self_reading)\n       90    0.001    0.000    0.497    0.006 C:\\Users\\mb_pe\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\asyncio\\windows_events.py:482(recv)\n\n\n"
+  }
+}

@@ -10,6 +10,7 @@ These tests cover:
 """
 
 import os
+import json
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -477,6 +478,71 @@ class TestMonitoringEndpoint:
                 assert isinstance(data["feature_importances"], list)
 
 
+class TestErrorRateTracking:
+    """The /monitoring endpoint must expose request counts and error rates."""
+
+    def _reset(self):
+        from api.main import _request_stats
+        _request_stats.update(total=0, errors_4xx=0, errors_5xx=0)
+
+    def test_error_rate_counts_4xx(self, synthetic_preprocessor):
+        """A Pydantic validation error (422) must show up in the error rate."""
+        self._reset()
+        with patch('api.main.model', mock_model()):
+            with patch('api.main.preprocessor', synthetic_preprocessor):
+                response = client.post("/predict", json={"EXT_SOURCE_2": 5.0})
+                assert response.status_code == 422
+        data = client.get("/monitoring").json()
+        assert data["total_requests"] >= 1
+        assert data["errors_4xx"] >= 1
+        assert data["error_rate"] is not None and data["error_rate"] > 0
+
+    def test_error_rate_counts_5xx(self):
+        """A server error (model not loaded -> 500) must show up as 5xx."""
+        self._reset()
+        with patch('api.main.model', None):
+            response = client.post("/predict", json={})
+            assert response.status_code == 500
+        data = client.get("/monitoring").json()
+        assert data["errors_5xx"] >= 1
+        assert data["error_rate"] is not None and data["error_rate"] > 0
+
+    def test_error_rate_none_when_no_traffic(self):
+        self._reset()
+        # The middleware counts a request once it completes, so the current
+        # /monitoring call appears in the NEXT snapshot: read twice.
+        client.get("/monitoring")
+        data = client.get("/monitoring").json()
+        assert data["total_requests"] == 1
+        assert data["errors_4xx"] == 0
+        assert data["errors_5xx"] == 0
+        assert data["error_rate"] == 0.0
+
+    def test_requests_log_writes_json_lines(self, tmp_path, monkeypatch):
+        """Each served request is appended as a JSON line (persistent log)."""
+        import api.main as main_module
+        log_path = str(tmp_path / "api_requests.jsonl")
+        monkeypatch.setattr(main_module, "REQUESTS_LOG_FILE", log_path)
+        client.get("/health")
+        with open(log_path, encoding="utf-8") as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        assert len(events) >= 1
+        event = events[-1]
+        assert event["method"] == "GET"
+        assert event["path"] == "/health"
+        assert event["status_code"] == 200
+        assert event["duration_ms"] >= 0
+        assert "timestamp" in event
+
+    def test_requests_log_disabled_on_empty_path(self, monkeypatch):
+        """An empty REQUESTS_LOG_FILE turns the persistent log off."""
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "REQUESTS_LOG_FILE", "")
+        # Must not raise: the request still completes
+        response = client.get("/health")
+        assert response.status_code == 200
+
+
 class TestFormCoverage:
     """Tests for the form-fields importance coverage computation."""
 
@@ -513,6 +579,147 @@ class TestOpenAPISchema:
 
     def test_docs_available(self):
         assert client.get("/docs").status_code == 200
+
+
+# ============================================================================
+# Inference optimization (PERF_STUDY.md): single-pass prediction, ONNX engine,
+# warm-up, async MLflow logging
+# ============================================================================
+
+class TestSinglePassPrediction:
+    """/predict must derive the class from the probability (one inference),
+    not call model.predict a second time."""
+
+    def _predict(self, synthetic_preprocessor, proba_default):
+        m = mock_model(probability=proba_default, prediction=99)  # predict() would say 99
+        with patch('api.main.model', m), patch('api.main.preprocessor', synthetic_preprocessor):
+            response = client.post("/predict", json={})
+        assert response.status_code == 200
+        return response.json(), m
+
+    def test_prediction_follows_probability_not_model_predict(self, synthetic_preprocessor):
+        data, m = self._predict(synthetic_preprocessor, proba_default=0.9)
+        assert data["prediction"] == 1          # derived: 0.9 > 0.5
+        m.predict.assert_not_called()           # single inference pass
+
+    def test_below_threshold_prediction_is_zero(self, synthetic_preprocessor):
+        data, _ = self._predict(synthetic_preprocessor, proba_default=0.3)
+        assert data["prediction"] == 0
+
+
+class TestOnnxEngine:
+    """ONNX Runtime engine: load, parity with the LightGBM reference."""
+
+    def _load_artifact(self):
+        pytest.importorskip("onnxruntime")
+        path = os.environ.get("MODEL_PATH", "api/models/credit_scoring_model.pkl")
+        if not os.path.exists(path):
+            pytest.skip("model artifact not available")
+        import joblib
+        return joblib.load(path)
+
+    def test_onnx_matches_lightgbm_probabilities(self):
+        import api.main as main_module
+        artifact = self._load_artifact()
+        onnx_path = main_module.ONNX_MODEL_PATH
+        if not os.path.exists(onnx_path):
+            pytest.skip("ONNX model not generated (run monitoring/optimize_model.py)")
+
+        rng = np.random.default_rng(7)
+        rows = []
+        for _ in range(5):
+            row = {}
+            for f in main_module.RAW_FIELDS:
+                name, default = f["name"], f["default"]
+                if f["type"] == "categorical":
+                    row[name] = default
+                elif name in ("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"):
+                    row[name] = float(rng.uniform(0.1, 0.9))
+                elif "AMT" in name:
+                    row[name] = float(rng.uniform(1e4, 5e5))
+                elif name.startswith("DAYS"):
+                    row[name] = float(-rng.integers(1000, 20000))
+                else:
+                    row[name] = float(default)
+            rows.append(row)
+
+        saved = (main_module.model, main_module.preprocessor,
+                 main_module.feature_names, main_module.onnx_session)
+        try:
+            main_module.model = artifact["model"]
+            main_module.preprocessor = artifact["preprocessor"]
+            main_module.feature_names = artifact["feature_names"]
+            main_module.onnx_session = None
+            main_module.load_onnx_session()
+            if main_module.onnx_session is None:
+                pytest.skip("ONNX session could not be created")
+            for row in rows:
+                X = artifact["preprocessor"].transform(pd.DataFrame([row]))
+                p_onnx = main_module.predict_probability(X)
+                p_skl = float(artifact["model"].predict_proba(X)[0][1])
+                assert abs(p_onnx - p_skl) < 1e-4
+        finally:
+            (main_module.model, main_module.preprocessor,
+             main_module.feature_names, main_module.onnx_session) = saved
+
+    def test_fallback_when_onnx_missing(self, tmp_path, monkeypatch):
+        """auto mode + no .onnx file -> engine stays LightGBM, no crash."""
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "ONNX_MODEL_PATH", str(tmp_path / "missing.onnx"))
+        saved_session = main_module.onnx_session
+        main_module.onnx_session = None
+        try:
+            main_module.load_onnx_session()
+            assert main_module.onnx_session is None
+        finally:
+            main_module.onnx_session = saved_session
+
+
+class TestWarmUp:
+    """Startup warm-up must run one prediction without raising."""
+
+    def test_warm_up_runs_one_prediction(self, synthetic_preprocessor):
+        import api.main as main_module
+        m = mock_model(probability=0.4, prediction=0)
+        with patch('api.main.model', m), patch('api.main.preprocessor', synthetic_preprocessor):
+            main_module.warm_up_inference()  # must not raise
+        m.predict_proba.assert_called()
+
+    def test_warm_up_noop_without_model(self):
+        import api.main as main_module
+        with patch('api.main.model', None):
+            main_module.warm_up_inference()  # must not raise
+
+
+class TestMlflowLoggingModes:
+    """MLFLOW_LOG_MODE: async (default) | sync | off."""
+
+    def _payload(self):
+        return {"EXT_SOURCE_2": 0.5}, 1, 0.42, "1.0.0", "LOW_RISK", 0.012
+
+    def test_mode_off_skips_logging(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "MLFLOW_LOG_MODE", "off")
+        with patch.object(main_module, "log_prediction_to_mlflow") as m:
+            main_module.dispatch_prediction_logging(*self._payload())
+        m.assert_not_called()
+
+    def test_mode_sync_logs_inline(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "MLFLOW_LOG_MODE", "sync")
+        with patch.object(main_module, "log_prediction_to_mlflow") as m:
+            main_module.dispatch_prediction_logging(*self._payload())
+        m.assert_called_once()
+
+    def test_mode_async_submits_and_completes(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "MLFLOW_LOG_MODE", "async")
+        with patch.object(main_module, "log_prediction_to_mlflow") as m:
+            main_module.dispatch_prediction_logging(*self._payload())
+            if main_module._mlflow_executor is not None:
+                main_module._mlflow_executor.shutdown(wait=True)
+        m.assert_called_once()
+
 
     def test_redoc_available(self):
         assert client.get("/redoc").status_code == 200

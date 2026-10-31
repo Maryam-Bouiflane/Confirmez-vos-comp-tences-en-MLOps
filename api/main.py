@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, TYPE_CHECKING, cast
@@ -24,19 +25,44 @@ import joblib
 import numpy as np
 import pandas as pd
 import mlflow
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, create_model
 
 from api.ml_pipeline import setup_mlflow_experiment, compute_form_coverage
 
 
-# Configure logging
+class JsonLogFormatter(logging.Formatter):
+    """Format log records as one JSON object per line (structured logging).
+
+    Machine-parsable production logs: each line carries the timestamp, the
+    level, the logger and the message, so the logs can be collected and
+    analyzed without regex parsing (see monitoring/DRIFT_STUDY.md).
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+# Configure logging. Structured JSON by default (as recommended for
+# production log analysis); LOG_FORMAT=text restores the classic
+# human-readable format for local debugging.
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+if os.getenv("LOG_FORMAT", "json").lower() != "text":
+    for _handler in logging.getLogger().handlers:
+        _handler.setFormatter(JsonLogFormatter())
 
 
 # Load environment variables
@@ -44,6 +70,16 @@ MODEL_PATH = os.getenv("MODEL_PATH", "api/models/credit_scoring_model.pkl")
 SCHEMA_PATH = os.getenv("SCHEMA_PATH", str(Path(__file__).parent / "schema" / "raw_columns.json"))
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///tracking/mlflow.db")
 MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "credit_scoring_api")
+ONNX_MODEL_PATH = os.getenv("ONNX_MODEL_PATH",
+                            str(Path(__file__).parent / "models" / "credit_scoring_model.onnx"))
+# Inference engine: "auto" (ONNX when available, LightGBM otherwise),
+# "onnx" or "lightgbm". See monitoring/PERF_STUDY.md for the benchmark.
+INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "auto").lower()
+# MLflow prediction logging: "async" (default, off the request critical
+# path: the sqlite logging measured ~255 ms/prediction), "sync" (blocking,
+# the pre-optimization behavior) or "off" (no per-prediction MLflow runs;
+# the request JSONL log and /monitoring keep working).
+MLFLOW_LOG_MODE = os.getenv("MLFLOW_LOG_MODE", "async").lower()
 
 # Configure MLflow at import time (not only at startup): predictions can be
 # logged before the startup event runs (e.g. TestClient without a context
@@ -63,6 +99,121 @@ model_version = "1.0.0"
 feature_names = None
 mlflow_run_id = None
 model_metadata = None
+onnx_session = None
+
+
+# ============================================================================
+# Inference engine (ONNX Runtime preferred, LightGBM fallback)
+# ============================================================================
+
+def load_onnx_session():
+    """Create the ONNX Runtime session if requested and available.
+
+    Graceful fallback to LightGBM (with a warning) in "auto" mode when the
+    .onnx artifact or the onnxruntime package is missing; a hard warning in
+    explicit "onnx" mode. Serving must not break because of the engine.
+    """
+    global onnx_session
+    if INFERENCE_ENGINE == "lightgbm":
+        return
+    if not Path(ONNX_MODEL_PATH).exists():
+        if INFERENCE_ENGINE == "onnx":
+            logger.warning(f"ONNX model not found at {ONNX_MODEL_PATH}: "
+                           "falling back to the LightGBM model")
+        return
+    try:
+        import onnxruntime as ort
+        session = ort.InferenceSession(ONNX_MODEL_PATH,
+                                        providers=["CPUExecutionProvider"])
+    except ImportError:
+        if INFERENCE_ENGINE == "onnx":
+            logger.warning("onnxruntime is not installed: falling back to "
+                           "the LightGBM model (uv sync --extra onnx)")
+        return
+    except Exception as e:
+        logger.warning(f"ONNX session could not be created ({e}): "
+                       "falling back to the LightGBM model")
+        return
+    # The session input width must match the preprocessor output: a pickle
+    # and an .onnx regenerated at different times would otherwise silently
+    # produce wrong predictions.
+    expected = session.get_inputs()[0].shape[-1]
+    if feature_names is not None and expected not in (None, len(feature_names)):
+        logger.warning(f"ONNX input width ({expected}) != preprocessor output "
+                       f"({len(feature_names)}): falling back to the LightGBM model")
+        return
+    onnx_session = session
+    logger.info(f"ONNX Runtime session loaded: {ONNX_MODEL_PATH} "
+                f"({expected} features)")
+
+
+def predict_probability(input_df) -> float:
+    """P(default) for a single preprocessed row, via the active engine.
+
+    ONNX Runtime path: ~0.4 ms/prediction vs ~4 ms for LightGBM
+    (monitoring/PERF_STUDY.md). The prediction class is derived from the
+    probability (> 0.5, LightGBM's own decision rule) instead of calling
+    model.predict a second time.
+    """
+    if onnx_session is not None:
+        out_names = [o.name for o in onnx_session.get_outputs()]
+        output_name = "probabilities" if "probabilities" in out_names else out_names[-1]
+        X = input_df.to_numpy().astype(np.float32)
+        proba = onnx_session.run([output_name],
+                                 {onnx_session.get_inputs()[0].name: X})[0]
+        return float(proba[0][1])
+    if model is None:
+        raise RuntimeError("No inference engine available (model not loaded)")
+    return float(model.predict_proba(input_df)[0][1])
+
+
+def warm_up_inference() -> None:
+    """Run one full prediction at startup to pay the cold-start cost
+    (imports, LightGBM first pass, ONNX session init) before real traffic
+    arrives. The monitoring data showed a ~1.2 s first request in
+    production; it now happens at deployment time.
+    """
+    if model is None or preprocessor is None:
+        return
+    try:
+        dummy = pd.DataFrame([{f["name"]: f["default"] for f in RAW_FIELDS}])
+        predict_probability(preprocessor.transform(dummy))
+        logger.info("Inference warm-up completed")
+    except Exception as e:
+        logger.warning(f"Warm-up skipped ({e})")
+
+
+# ============================================================================
+# Background MLflow logging
+# ============================================================================
+
+# Single worker: sqlite cannot take concurrent writers, and serializing the
+# runs (~255 ms each, measured) is far above the production traffic rate.
+# Non-daemon worker threads are joined at interpreter exit, so batch tools
+# (monitoring/generate_traffic.py) still see every run before exiting.
+_mlflow_executor: Optional[ThreadPoolExecutor] = None
+
+
+def dispatch_prediction_logging(input_data: Dict[str, Any], prediction: int,
+                                probability: float, model_version: str,
+                                risk_category: str, processing_time: float) -> None:
+    """Send the MLflow logging off the request critical path.
+
+    MLFLOW_LOG_MODE: async (default) | sync | off — see api/main.py header.
+    """
+    if MLFLOW_LOG_MODE == "off":
+        return
+    if MLFLOW_LOG_MODE == "sync":
+        log_prediction_to_mlflow(input_data, prediction, probability,
+                                 model_version, risk_category, processing_time)
+        return
+    global _mlflow_executor
+    if _mlflow_executor is None:
+        _mlflow_executor = ThreadPoolExecutor(max_workers=1,
+                                              thread_name_prefix="mlflow-log")
+    _mlflow_executor.submit(log_prediction_to_mlflow, input_data, prediction,
+                            probability, model_version, risk_category,
+                            processing_time)
 
 
 # ============================================================================
@@ -88,6 +239,60 @@ def record_prediction(probability: float, prediction: int,
             "processing_time_ms": round(float(processing_time_ms), 2),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+
+
+# Request/error counters for the operational metrics served on /monitoring.
+# In-memory like the prediction buffer (the Render free plan has no durable
+# disk): enough to expose a live error rate next to the latency metrics.
+_request_stats = {"total": 0, "errors_4xx": 0, "errors_5xx": 0}
+
+
+def record_request(status_code: Optional[int]) -> None:
+    """Count a served request; status_code None means an unhandled exception (5xx)."""
+    with _prediction_lock:
+        _request_stats["total"] += 1
+        if status_code is None or status_code >= 500:
+            _request_stats["errors_5xx"] += 1
+        elif status_code >= 400:
+            _request_stats["errors_4xx"] += 1
+
+
+# Persistent request log (JSON Lines): one structured line per served
+# request — the durable counterpart of the in-memory counters above. This
+# is what makes the error rate and the request latency analyzable a
+# posteriori (monitoring/drift_analysis.py --requests-file). Lives under
+# tracking/ by default (ephemeral on the Render free plan, like the MLflow
+# store: export before redeploying, or set REQUESTS_LOG_FILE elsewhere).
+REQUESTS_LOG_FILE = os.getenv("REQUESTS_LOG_FILE", os.path.join("tracking", "api_requests.jsonl"))
+_requests_log_lock = threading.Lock()
+_requests_log_disabled = False
+
+
+def record_request_event(method: str, path: str, status_code: Optional[int],
+                         duration_ms: float) -> None:
+    """Append one JSON line describing a served request to REQUESTS_LOG_FILE.
+
+    Silently disabled after the first write failure (e.g. read-only
+    filesystem): monitoring must never break request serving.
+    """
+    global _requests_log_disabled
+    if _requests_log_disabled or not REQUESTS_LOG_FILE:
+        return
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "method": method,
+        "path": path,
+        "status_code": status_code,
+        "duration_ms": round(float(duration_ms), 2),
+    }
+    try:
+        with _requests_log_lock:
+            os.makedirs(os.path.dirname(REQUESTS_LOG_FILE) or ".", exist_ok=True)
+            with open(REQUESTS_LOG_FILE, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(event) + "\n")
+    except OSError as e:
+        _requests_log_disabled = True
+        logger.warning(f"Request log disabled ({REQUESTS_LOG_FILE} not writable): {e}")
 
 
 def _percentile(sorted_values: List[float], p: float) -> float:
@@ -290,6 +495,10 @@ class MonitoringOutput(BaseModel):
     """Live serving metrics from the in-memory prediction buffer."""
     total_predictions: int = Field(..., description="Predictions currently in the buffer")
     buffer_capacity: int = Field(..., description="Maximum records kept in memory")
+    total_requests: int = Field(0, description="Requests served since the API started")
+    errors_4xx: int = Field(0, description="Client errors (4xx: validation, not found...) since start")
+    errors_5xx: int = Field(0, description="Server errors (5xx: unhandled exception, degraded model...) since start")
+    error_rate: Optional[float] = Field(None, description="Fraction of requests that failed (4xx + 5xx)")
     avg_latency_ms: Optional[float] = Field(None, description="Average inference time (ms)")
     p95_latency_ms: Optional[float] = Field(None, description="95th percentile inference time (ms)")
     min_latency_ms: Optional[float] = Field(None, description="Fastest inference (ms)")
@@ -433,6 +642,34 @@ app.add_middleware(
 request_counter = 0
 
 
+@app.middleware("http")
+async def error_rate_middleware(request: Request, call_next):
+    """Track request counts and error counts for /monitoring.
+
+    FastAPI validation errors (422) are raised before the endpoint runs,
+    but the middleware still sees the final response status, so they are
+    counted as 4xx. Unhandled exceptions re-raise through here and count
+    as 5xx.
+
+    Each served request is also appended as a JSON line to REQUESTS_LOG_FILE
+    (timestamp, method, path, status, duration) so the error rate and the
+    request latency can be analyzed a posteriori.
+    """
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        record_request(response.status_code)
+        record_request_event(request.method, request.url.path,
+                             response.status_code,
+                             (time.perf_counter() - start) * 1000)
+        return response
+    except Exception:
+        record_request(None)
+        record_request_event(request.method, request.url.path, None,
+                             (time.perf_counter() - start) * 1000)
+        raise
+
+
 @app.on_event("startup")
 async def startup_event():
     """Load model when application starts"""
@@ -445,6 +682,8 @@ async def startup_event():
     try:
         model, feature_names, model_metadata = load_model(MODEL_PATH)
         logger.info("Model loaded successfully")
+        load_onnx_session()
+        warm_up_inference()
         logger.info("API is ready")
     except FileNotFoundError:
         logger.warning(f"Model not found at {MODEL_PATH}")
@@ -518,6 +757,7 @@ async def get_model_info():
     return {
         "model_loaded": True,
         "preprocessor_loaded": preprocessor is not None,
+        "inference_engine": "onnx" if onnx_session is not None else "lightgbm",
         "model_version": model_version,
         "model_type": model_metadata.get('model_type'),
         "feature_count": len(feature_names) if feature_names else 0,
@@ -553,10 +793,22 @@ async def get_monitoring():
     with _prediction_lock:
         records = list(_recent_predictions)
 
+    with _prediction_lock:
+        stats = dict(_request_stats)
+
+    def _error_rate(s: Dict[str, int]) -> Optional[float]:
+        if not s["total"]:
+            return None
+        return round((s["errors_4xx"] + s["errors_5xx"]) / s["total"], 4)
+
     if not records:
         return MonitoringOutput(
             total_predictions=0,
             buffer_capacity=MONITORING_BUFFER_SIZE,
+            total_requests=stats["total"],
+            errors_4xx=stats["errors_4xx"],
+            errors_5xx=stats["errors_5xx"],
+            error_rate=_error_rate(stats),
         )
 
     latencies = sorted(r["processing_time_ms"] for r in records)
@@ -568,6 +820,10 @@ async def get_monitoring():
     return MonitoringOutput(
         total_predictions=len(records),
         buffer_capacity=MONITORING_BUFFER_SIZE,
+        total_requests=stats["total"],
+        errors_4xx=stats["errors_4xx"],
+        errors_5xx=stats["errors_5xx"],
+        error_rate=_error_rate(stats),
         avg_latency_ms=round(sum(latencies) / len(latencies), 2),
         p95_latency_ms=round(_percentile(latencies, 95), 2),
         min_latency_ms=round(latencies[0], 2),
@@ -604,9 +860,11 @@ async def predict(input_data: PredictionInput):
         input_df = prepare_input_data(input_data)
         
         if hasattr(model, 'predict_proba'):
-            proba = model.predict_proba(input_df)[0]
-            prediction = model.predict(input_df)[0]
-            probability = float(proba[1])
+            # Single inference pass: the class is derived from the
+            # probability (> 0.5, LightGBM's own decision rule) instead of a
+            # second model.predict call (x2 inference cost, PERF_STUDY.md).
+            probability = predict_probability(input_df)
+            prediction = 1 if probability > 0.5 else 0
         elif hasattr(model, 'predict'):
             prediction = model.predict(input_df)[0]
             if isinstance(prediction, (float, np.floating)):
@@ -638,8 +896,8 @@ async def predict(input_data: PredictionInput):
             processing_time_ms=processing_time * 1000,
         )
         
-        # Log to MLflow
-        log_prediction_to_mlflow(
+        # Log to MLflow (off the request critical path by default)
+        dispatch_prediction_logging(
             input_data=input_data.model_dump(),
             prediction=int(prediction),
             probability=probability,

@@ -14,6 +14,8 @@ Environment Variables:
     API_URL: URL of the FastAPI backend (default: http://localhost:8000)
 """
 
+import glob
+import json
 import os
 import requests
 import pandas as pd
@@ -216,6 +218,34 @@ def fetch_model_info(api_url: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# Local drift-analysis output (see monitoring/drift_analysis.py). The
+# analysis runs locally (PoC): the Render free plan has no durable disk,
+# and the brief explicitly allows cloud-generated data to be analyzed
+# locally. On a fresh deployment this directory is empty and the Drift tab
+# explains how to generate the reports.
+DRIFT_OUTPUT_DIR = os.getenv("DRIFT_OUTPUT_DIR", "monitoring/output")
+
+
+def list_drift_summaries() -> list:
+    """Available drift summaries (label, path), sorted with baseline first."""
+    paths = glob.glob(os.path.join(DRIFT_OUTPUT_DIR, "drift_summary*.json"))
+    def label_of(p: str) -> str:
+        name = os.path.splitext(os.path.basename(p))[0]
+        return "baseline" if name == "drift_summary" else name.replace("drift_summary_", "")
+    out = [(label_of(p), p) for p in paths]
+    return sorted(out, key=lambda t: (t[0] != "baseline", t[0]))
+
+
+@st.cache_data(ttl=60)
+def load_drift_summary(path: str) -> Optional[Dict[str, Any]]:
+    """Load a drift summary produced by monitoring/drift_analysis.py."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except OSError:
+        return None
+
+
 # Display order of the form groups (most relevant first)
 GROUP_ORDER = [
     "Client", "Prêt", "Sources externes", "Région",
@@ -379,7 +409,7 @@ def render_monitoring_tab() -> None:
     preds = monitoring.get("predictions", [])
     df = pd.DataFrame(preds)
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric(
             "Predictions (buffer)",
@@ -392,6 +422,15 @@ def render_monitoring_tab() -> None:
         st.metric("P95 inference time", f"{monitoring['p95_latency_ms']:.1f} ms")
     with col4:
         st.metric("Default rate", f"{(monitoring['default_rate'] or 0) * 100:.1f} %")
+    with col5:
+        error_rate = monitoring.get("error_rate")
+        st.metric(
+            "Error rate (4xx+5xx)",
+            f"{(error_rate or 0) * 100:.1f} %",
+            help="Requests that failed (validation errors, server errors) "
+            "over all requests served since the API started. Client errors "
+            "like 422 are expected when testing invalid inputs.",
+        )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -433,6 +472,149 @@ def render_monitoring_tab() -> None:
     st.caption(
         "In-memory buffer: metrics reset on API restart or redeploy. "
         "Persistent tracking of every prediction is available through MLflow."
+    )
+
+
+def render_drift_tab() -> None:
+    """Data drift analysis: results produced by monitoring/drift_analysis.py."""
+    st.header("Data Drift Analysis")
+    st.markdown(
+        "Compares the production inputs logged by the API (MLflow `input.json` "
+        "artifacts, or an exported JSONL of payloads) with the training "
+        "reference (`application_train` restricted to the 22 model columns), "
+        "using Evidently's statistical tests (K-S / Z-test, p < 0.01 after "
+        "multiple-comparison correction). This analysis is a local PoC: run "
+        "`monitoring/drift_analysis.py` and the results appear here."
+    )
+
+    summaries = list_drift_summaries()
+    if not summaries:
+        nl = chr(10)
+        st.info(
+            "No drift summary found in `monitoring/output/`. Generate one "
+            "from the project root:" + nl
+            + "```" + nl
+            + "uv run python monitoring/generate_traffic.py --n 500" + nl
+            + "uv run python monitoring/drift_analysis.py --since=-2h" + nl
+            + "```" + nl + nl
+            + "The first command sends realistic traffic to the local API "
+            "(logged to MLflow), the second runs the drift analysis. The "
+            "Render free plan has no durable disk, so this analysis runs "
+            "locally, as allowed by the project brief."
+        )
+        return
+
+    labels = [label for label, _ in summaries]
+    chosen = st.selectbox("Analysis", labels, index=0)
+    summary = load_drift_summary(dict(summaries)[chosen])
+    if summary is None:
+        st.error(f"Could not read the drift summary for '{chosen}'.")
+        return
+
+    status = summary.get("status", "unknown")
+    status_display = {
+        "stable": ("STABLE", "success"),
+        "drift_detected": ("DRIFT DETECTED", "error"),
+        "alert_critical_features": ("ALERT: critical features drifting", "error"),
+        "insufficient_samples": ("INSUFFICIENT SAMPLES", "warning"),
+    }.get(status, (status.upper(), "warning"))
+    getattr(st, status_display[1])(f"**{status_display[0]}**")
+
+    drift = summary.get("drift", {})
+    latency = summary.get("latency", {})
+    critical = summary.get("critical_features_drifted", [])
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Production samples", summary.get("n_production_samples", 0))
+    with col2:
+        st.metric("Reference rows", summary.get("n_reference_rows", 0))
+    with col3:
+        st.metric(
+            "Drifted columns",
+            f"{drift.get('n_drifted_columns', 0)}/{drift.get('n_columns', 0)}",
+            f"{(drift.get('share_drifted_columns') or 0) * 100:.1f}% of columns",
+        )
+    with col4:
+        p95 = latency.get("p95_ms")
+        st.metric(
+            "Latency p95",
+            f"{p95:.0f} ms" if p95 is not None else "N/A",
+            delta="anomaly" if latency.get("p95_anomaly") else None,
+            delta_color="inverse",
+        )
+
+    errors = summary.get("errors") or {}
+    if errors.get("n_requests"):
+        ecol1, ecol2 = st.columns(2)
+        with ecol1:
+            st.metric(
+                "Error rate (request log)",
+                f"{(errors.get('error_rate') or 0) * 100:.1f}%",
+                f"{errors.get('n_errors', 0)}/{errors.get('n_requests', 0)} requests",
+                delta="anomaly" if errors.get("error_rate_anomaly") else None,
+                delta_color="inverse",
+            )
+        with ecol2:
+            if errors.get("error_rate_anomaly"):
+                st.error(
+                    "Error rate above the alert threshold "
+                    f"({errors.get('error_rate_alert', 0.05) * 100:.0f}%): "
+                    "investigate the 4xx/5xx requests in the request log."
+                )
+            else:
+                st.success("Error rate within the alert threshold.")
+
+    if critical:
+        st.error(
+            "Critical model features are drifting: "
+            + ", ".join(f"**{f}**" for f in critical)
+            + ". These columns carry most of the model's gain — investigate "
+            "the data source before more predictions are served."
+        )
+
+    if summary.get("status") == "insufficient_samples":
+        st.warning(
+            "Fewer production samples than required for meaningful "
+            "statistical tests — accumulate more traffic and re-run."
+        )
+        return
+
+    st.subheader("Per-feature drift (p-value, lower = more drifted)")
+    per_feature = drift.get("per_feature", [])
+    if per_feature:
+        import math
+        fi_df = pd.DataFrame(per_feature)
+        fi_df["log10_p"] = fi_df["value"].clip(lower=1e-50).apply(lambda v: -math.log10(v))
+        fig = px.bar(
+            fi_df.sort_values("log10_p", ascending=False),
+            x="log10_p", y="feature", orientation="h",
+            color="drift_detected",
+            color_discrete_map={True: "#F44336", False: "#4CAF50"},
+            labels={"log10_p": "-log10(p-value)", "feature": "Feature",
+                    "drift_detected": "Drift detected"},
+        )
+        threshold = summary.get("thresholds", {}).get("p_value", 0.01)
+        fig.add_vline(x=-math.log10(threshold), line_dash="dash",
+                      annotation_text=f"alert threshold p = {threshold}")
+        fig.update_layout(height=560, paper_bgcolor="rgba(0,0,0,0)", showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "K-S test per numeric column, Z-test per categorical (Evidently). "
+            "The threshold is corrected for the 22 simultaneous comparisons."
+        )
+
+    source = summary.get("source", {})
+    src_desc = {
+        "mlflow": f"MLflow experiment '{source.get('experiment')}' "
+                  f"({source.get('n_runs')} API runs)",
+        "inputs_file": f"exported payloads ({source.get('path')})",
+    }.get(source.get("type"), str(source))
+    st.caption(
+        f"Analysis '{summary.get('label')}' generated on "
+        f"{summary.get('generated_at', '?')}. Source: {src_desc}. "
+        "Detailed per-feature distributions: "
+        "`monitoring/output/drift_report*.html` (open in a browser)."
     )
 
 
@@ -610,7 +792,9 @@ def main():
     """)
     
     # Main content
-    tab1, tab2, tab3, tab4 = st.tabs(["📝 Prediction Form", "📡 Monitoring", "📊 Model Analytics", "ℹ️ Help"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📝 Prediction Form", "Monitoring", "Model Analytics", "Data Drift", "Help"]
+    )
     
     with tab1:
         # Prediction Form (generated dynamically from the API /schema endpoint)
@@ -752,6 +936,9 @@ def main():
         render_analytics_tab()
 
     with tab4:
+        render_drift_tab()
+
+    with tab5:
         # Help Tab
         st.header("ℹ️ Help & Documentation")
         
