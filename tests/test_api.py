@@ -11,6 +11,7 @@ These tests cover:
 
 import os
 import json
+import sys
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -673,6 +674,142 @@ class TestOnnxEngine:
             assert main_module.onnx_session is None
         finally:
             main_module.onnx_session = saved_session
+
+    def test_fallback_warns_when_engine_forced_onnx(self, tmp_path, monkeypatch):
+        """INFERENCE_ENGINE=onnx + missing file -> warning, LightGBM fallback."""
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "ONNX_MODEL_PATH", str(tmp_path / "missing.onnx"))
+        monkeypatch.setattr(main_module, "INFERENCE_ENGINE", "onnx")
+        saved_session = main_module.onnx_session
+        main_module.onnx_session = None
+        try:
+            with patch.object(main_module.logger, "warning") as warn:
+                main_module.load_onnx_session()
+            assert main_module.onnx_session is None
+            warn.assert_called_once()
+        finally:
+            main_module.onnx_session = saved_session
+
+
+class TestOnnxEngineMocked:
+    """ONNX engine paths exercised with a stubbed onnxruntime.
+
+    These tests run everywhere (CI has no onnxruntime installed): the
+    module is injected into sys.modules, so import onnxruntime picks
+    the stub.
+    """
+
+    @staticmethod
+    def _install_fake_ort(monkeypatch, width=152, proba=0.42):
+        import sys
+        import types
+
+        class _Input:
+            name = "input"
+            shape = [None, width]
+
+        class _Output:
+            name = "probabilities"
+
+        class _Session:
+            def get_inputs(self):
+                return [_Input()]
+
+            def get_outputs(self):
+                return [_Output()]
+
+            def run(self, names, feeds):
+                return [np.array([[1 - proba, proba]])]
+
+        fake = types.ModuleType("onnxruntime")
+        fake.InferenceSession = lambda path, providers=None: _Session()
+        monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+
+    @staticmethod
+    def _install_model_file(monkeypatch, tmp_path):
+        model_file = tmp_path / "model.onnx"
+        model_file.write_bytes(b"fake-onnx")
+        import api.main as main_module
+        monkeypatch.setattr(main_module, "ONNX_MODEL_PATH", str(model_file))
+        monkeypatch.setattr(main_module, "INFERENCE_ENGINE", "auto")
+        monkeypatch.setattr(main_module, "feature_names", [f"f{i}" for i in range(152)])
+
+    def test_load_session_and_predict_via_onnx(self, tmp_path, monkeypatch):
+        import api.main as main_module
+        self._install_fake_ort(monkeypatch, width=152, proba=0.42)
+        self._install_model_file(monkeypatch, tmp_path)
+        saved = main_module.onnx_session
+        try:
+            main_module.onnx_session = None
+            main_module.load_onnx_session()
+            assert main_module.onnx_session is not None
+            X = pd.DataFrame(np.zeros((1, 152)))
+            assert abs(main_module.predict_probability(X) - 0.42) < 1e-9
+        finally:
+            main_module.onnx_session = saved
+
+    def test_width_mismatch_falls_back(self, tmp_path, monkeypatch):
+        """ONNX input width != preprocessor output -> no session (silent guard)."""
+        import api.main as main_module
+        self._install_fake_ort(monkeypatch, width=99)
+        self._install_model_file(monkeypatch, tmp_path)
+        saved = main_module.onnx_session
+        try:
+            main_module.onnx_session = None
+            main_module.load_onnx_session()
+            assert main_module.onnx_session is None
+        finally:
+            main_module.onnx_session = saved
+
+    def test_import_error_falls_back(self, tmp_path, monkeypatch):
+        """onnxruntime not importable -> LightGBM fallback, no crash."""
+        import sys
+        import api.main as main_module
+        # A None entry in sys.modules makes `import onnxruntime` raise ImportError
+        monkeypatch.setitem(sys.modules, "onnxruntime", None)
+        self._install_model_file(monkeypatch, tmp_path)
+        saved = main_module.onnx_session
+        try:
+            main_module.onnx_session = None
+            main_module.load_onnx_session()
+            assert main_module.onnx_session is None
+        finally:
+            main_module.onnx_session = saved
+
+    def test_predict_without_any_engine_raises(self, monkeypatch, synthetic_preprocessor):
+        import api.main as main_module
+        m = mock_model(probability=0.5, prediction=0)
+        monkeypatch.setattr(main_module, "onnx_session", None)
+        with patch('api.main.model', None):
+            with pytest.raises(RuntimeError):
+                main_module.predict_probability(pd.DataFrame([{"x": 0.0}]))
+
+
+class TestJsonLogFormatter:
+    """Structured JSON logs: one JSON object per line."""
+
+    def test_format_record_as_json(self):
+        import logging as _logging
+        from api.main import JsonLogFormatter
+        record = _logging.LogRecord("api.test", _logging.WARNING, __file__, 1,
+                                     "hello %s", ("world",), None)
+        line = JsonLogFormatter().format(record)
+        parsed = json.loads(line)
+        assert parsed["level"] == "WARNING"
+        assert parsed["logger"] == "api.test"
+        assert parsed["message"] == "hello world"
+        assert "timestamp" in parsed
+
+    def test_format_record_with_exception(self):
+        import logging as _logging
+        from api.main import JsonLogFormatter
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            record = _logging.LogRecord("api.test", _logging.ERROR, __file__, 1,
+                                        "failed", (), sys.exc_info())
+        parsed = json.loads(JsonLogFormatter().format(record))
+        assert "ValueError" in parsed["exception"]
 
 
 class TestWarmUp:
