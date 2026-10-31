@@ -260,7 +260,12 @@ L'étude complète (profiling, goulots identifiés, optimisations, non-régressi
 Requête complète en régime établi : **332,5 ms → 27,4 ms (x12)**. Non-régression
 vérifiée : 0 flip de décision sur 300 lignes réelles. Le modèle ONNX
 (`api/models/credit_scoring_model.onnx`) est committé et déployé par la
-pipeline CI/CD (le Dockerfile installe l'extra `onnx`).
+pipeline CI/CD (le Dockerfile installe l'extra `onnx`). Sur le plan Render
+gratuit (512 Mo de RAM), les deux moteurs ne tiennent pas en mémoire
+simultanément : les blueprints Render fixent `INFERENCE_ENGINE=lightgbm`
+(fallback intégré) ; le moteur ONNX est actif localement et sur tout
+environnement avec plus de RAM — les autres optimisations (logging
+asynchrone, warm-up, single-pass) restent actives partout.
 
 ### Reproduire les mesures
 

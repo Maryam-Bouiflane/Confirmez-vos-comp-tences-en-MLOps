@@ -151,9 +151,16 @@ moteur actif (`inference_engine: onnx|lightgbm`).
 - **Software** : Python 3.12, image `python:3.12-slim` + `libgomp1` (OpenMP
   LightGBM), logging MLflow asynchrone par défaut (`sync`/`off` disponibles).
 - **Hardware** : CPU only — à 0,4 ms d'inférence ONNX, un GPU serait
-  inutile (coût/complexité sans bénéfice à ce débit) ; le plan Render
-  gratuit suffit, le warm-up supprime la pénalité du cold start qui
-  restait la seule vraie latence visible côté client.
+  inutile (coût/complexité sans bénéfice à ce débit). Le plan Render
+  gratuit est **limité à 512 Mo de RAM** : maintenir en mémoire le booster
+  LightGBM dé-picklé ET la session ONNX dépasse cette limite (OOM observé
+  au démarrage du staging). Décision : `INFERENCE_ENGINE=lightgbm` sur
+  Render (blueprints), moteur ONNX actif localement et sur tout
+  environnement disposant de RAM suffisante — les autres optimisations
+  (logging asynchrone = ~80 % du gain, warm-up, single-pass) sont
+  neutres en mémoire et restent actives en production. C'est l'illustration
+  du point de vigilance de l'énoncé : valider la compatibilité des
+  optimisations avec l'environnement de production réel.
 
 ## 7. Limites et perspectives
 
