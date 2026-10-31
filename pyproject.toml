@@ -40,6 +40,11 @@ dev = [
     "mypy>=1.8.0",
     "pandas-stubs>=2.0.0",
 ]
+onnx = [
+    "onnx>=1.16",
+    "onnxmltools>=1.12",
+    "onnxruntime>=1.18",
+]
 
 # Application project (not a library): uv installs the dependencies only,
 # it does not build/install the project package itself.
@@ -54,5 +59,14 @@ module = "joblib"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "optuna_integration.*"]
+module = ["sklearn.*", "optuna_integration.*", "onnxruntime.*", "onnxmltools.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "evidently.*"
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "evidently>=0.7.23",
+]

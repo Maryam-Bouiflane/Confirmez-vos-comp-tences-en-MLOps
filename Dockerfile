@@ -15,7 +15,9 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock .
 
 # Sync dependencies into /app/.venv
-RUN uv sync --frozen
+# --extra onnx: ONNX Runtime inference engine (see monitoring/PERF_STUDY.md:
+# x11 faster single-row inference than LightGBM, identical predictions)
+RUN uv sync --frozen --extra onnx
 
 # Stage 2: Runtime stage
 FROM python:3.12-slim

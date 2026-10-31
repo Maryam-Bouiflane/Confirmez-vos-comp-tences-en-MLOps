@@ -1,0 +1,215 @@
+{
+  "label": "baseline",
+  "status": "stable",
+  "generated_at": "2026-10-16T17:25:44.114213+00:00",
+  "n_production_samples": 500,
+  "n_reference_rows": 20000,
+  "reference": {
+    "dataset": "application_train",
+    "columns": "the 22 raw model columns"
+  },
+  "source": {
+    "type": "inputs_file",
+    "path": "monitoring/output/payloads_normal.jsonl"
+  },
+  "drift": {
+    "per_feature": [
+      {
+        "feature": "DAYS_BIRTH",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.010456878399791748,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "CNT_CHILDREN",
+        "feature_type": "numeric",
+        "test": "z",
+        "value": 0.057505437701500295,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "NAME_CONTRACT_TYPE",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.07891532421984215,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "EXT_SOURCE_1",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.09321446211299644,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "NAME_FAMILY_STATUS",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.12938860754802484,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "AMT_INCOME_TOTAL",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.2230710627306185,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "EXT_SOURCE_2",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.22513438184020163,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "AMT_CREDIT",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.23889897401422233,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "DAYS_ID_PUBLISH",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.23889897401422233,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "DAYS_EMPLOYED",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.2521543305431815,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "REGION_RATING_CLIENT",
+        "feature_type": "numeric",
+        "test": "z",
+        "value": 0.280565351067144,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "AMT_GOODS_PRICE",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.2876467198693845,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "NAME_EDUCATION_TYPE",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.3571862727998991,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "DAYS_LAST_PHONE_CHANGE",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.41929069986608114,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "EXT_SOURCE_3",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.4272646844196819,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "ORGANIZATION_TYPE",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.8493312648706826,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "NAME_INCOME_TYPE",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.8743640222847673,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "AMT_REQ_CREDIT_BUREAU_YEAR",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.8793723650710199,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "CODE_GENDER",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.905192261291615,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "OCCUPATION_TYPE",
+        "feature_type": "categorical",
+        "test": "z",
+        "value": 0.9160932232704289,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "OWN_CAR_AGE",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.9481049208549566,
+        "threshold": 0.01,
+        "drift_detected": false
+      },
+      {
+        "feature": "AMT_ANNUITY",
+        "feature_type": "numeric",
+        "test": "ks",
+        "value": 0.9948372517235556,
+        "threshold": 0.01,
+        "drift_detected": false
+      }
+    ],
+    "n_columns": 22,
+    "n_drifted_columns": 0,
+    "share_drifted_columns": 0.0,
+    "dataset_drift": false
+  },
+  "critical_features": [
+    "EXT_SOURCE_1",
+    "EXT_SOURCE_2",
+    "EXT_SOURCE_3",
+    "DAYS_BIRTH"
+  ],
+  "critical_features_drifted": [],
+  "latency": {
+    "n_samples": 0,
+    "p95_anomaly": null
+  },
+  "thresholds": {
+    "p_value": 0.01,
+    "latency_p95_alert_ms": 500.0,
+    "dataset_drift_share": 0.5
+  }
+}

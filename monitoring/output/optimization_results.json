@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-10-23T13:07:38.080288+00:00",
+  "n_rows": 300,
+  "n_features": 152,
+  "onnx_path": "api\\models\\credit_scoring_model.onnx",
+  "onnx_size_kb": 22667.8,
+  "parity": {
+    "max_abs_prob_delta": 2.060782137713879e-07,
+    "decision_flips_at_0_5": 0,
+    "decision_flips_at_business_threshold": 0,
+    "business_threshold": 0.6676
+  },
+  "single_row_lightgbm": {
+    "n": 300,
+    "mean_ms": 4.27,
+    "p50_ms": 2.876,
+    "p95_ms": 18.065,
+    "max_ms": 34.123
+  },
+  "single_row_onnxruntime": {
+    "n": 300,
+    "mean_ms": 0.386,
+    "p50_ms": 0.138,
+    "p95_ms": 0.291,
+    "max_ms": 33.567
+  },
+  "single_row_speedup_x": 11.06,
+  "batch32_lightgbm_ms": 37.064,
+  "batch32_onnxruntime_ms": 9.409
+}
