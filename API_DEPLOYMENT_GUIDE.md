@@ -69,7 +69,7 @@ credit-scoring-api/
 ├── Dockerfile               # Docker configuration for API (multi-stage, non-root user)
 ├── Dockerfile.streamlit     # Docker configuration for Streamlit
 ├── docker-compose.yml       # Docker Compose for local development
-│                            # (named volume api-tracking mounted on /app/tracking)
+│                            # (./tracking bind-mounted on /app/tracking — shared with the host; includes the mlflow-ui service on http://localhost:5001)
 ├── render.yaml              # Render deployment configuration (prod + staging)
 ├── pyproject.toml           # Python dependencies (uv) + mypy config
 ├── uv.lock                  # Lockfile (committed for reproducibility)
@@ -144,7 +144,7 @@ Note: build the images **after** training, as the Dockerfile copies
 ### Run with Docker Compose
 
 ```bash
-# Build and start both API and Streamlit
+# Build and start API, dashboard and MLflow UI
 docker-compose up -d --build
 
 # View logs

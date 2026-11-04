@@ -8,7 +8,7 @@ visualisation.
 
 | Donnée | Où / comment | Stockage |
 |---|---|---|
-| Inputs complets (22 colonnes brutes) | chaque `/predict` logge le payload tel que reçu en artefact MLflow `input.json` | MLflow (SQLite local, volume Docker `api-tracking` en local) |
+| Inputs complets (22 colonnes brutes) | chaque `/predict` logge le payload tel que reçu en artefact MLflow `input.json` | MLflow (SQLite local dans `tracking/`, partagé entre l'hôte et la stack Docker par bind mount) |
 | Outputs (prediction, probability, risk_category) | métriques et tags du run MLflow | MLflow |
 | Temps d'exécution (`processing_time_ms`) | métrique du run MLflow | MLflow |
 | Log de requêtes (une ligne JSON par requête : timestamp, méthode, chemin, statut, durée) | middleware HTTP de l'API | JSONL `tracking/api_requests.jsonl` (`REQUESTS_LOG_FILE`) |
@@ -27,8 +27,7 @@ Comme l'énoncé l'autorise explicitement (« les logs peuvent être générés 
 l'API (cloud) puis téléchargés, stockés et analysés localement »), le PoC
 fonctionne ainsi :
 
-1. le trafic passe par l'API (localement via la stack Docker dont le volume
-   `api-tracking` persiste, ou contre l'API déployée avec
+1. le trafic passe par l'API (localement via la stack Docker — le store `tracking/` est partagé avec l'hôte et persiste, ou contre l'API déployée avec
    `monitoring/generate_traffic.py --url ... --save-payloads ...`) ;
 2. l'analyse tourne localement sur ces données.
 
@@ -104,7 +103,7 @@ dashboard).
    cette comparaison finit par signaler de simples évolutions normales. La
    prochaine étape : comparer plutôt à une période récente de production
    vérifiée saine, dès qu'on aura assez de recul.
-5. **Stockage / coût** : MLflow SQLite local (volume Docker) suffit au PoC ;
+5. **Stockage / coût** : MLflow SQLite local (`tracking/`) suffit au PoC ;
    en production, un store persistant (PostgreSQL/MLflow server) et une
    politique de rétention (les inputs bruts grossissent linéairement avec le
    trafic) sont nécessaires.
