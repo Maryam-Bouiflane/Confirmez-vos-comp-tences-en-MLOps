@@ -6,21 +6,30 @@
 
 ## 🚀 Quick Start
 
-### Lancer en local (5 minutes)
+### Lancer en local : docker compose (méthode principale)
+
+Une seule commande lance l'API, le dashboard et l'UI MLflow — le modèle entraîné est committé, rien à entraîner :
 
 ```bash
-# 1. Prérequis : Python 3.12+ et uv (https://docs.astral.sh/uv/)
-# 2. Cloner puis se placer à la racine du projet
-# 3. Installer les dépendances
+# Prérequis : Docker Desktop lancé. Cloner le projet, se placer à la racine, puis :
+docker compose up -d --build
+```
+
+- **API / Swagger** : http://localhost:8000/docs
+- **Dashboard** : http://localhost:8501
+- **UI MLflow** : http://localhost:5001 (runs d'entraînement et prédictions du store partagé `tracking/`)
+
+À savoir :
+
+- le premier build dure plusieurs minutes ; les suivants sont rapides. Après un changement de code, relancer avec `--build` ;
+- si le build échoue avec l'erreur `x-docker-expose-session-sharedkey` : lancer `export COMPOSE_BAKE=false` d'abord (bug connu de Docker Desktop avec les chemins contenant des accents).
+
+**Sans Docker** (uv + Python 3.12 requis) :
+
+```bash
 uv sync
-
-# 4. Lancer l'API (le modèle entraîné est committé : rien à entraîner)
-uv run uvicorn api.main:app --port 8000
-#    -> Swagger : http://localhost:8000/docs
-
-# 5. Dans un second terminal, lancer le dashboard
-uv run streamlit run streamlit_app/app.py --server.port=8501
-#    -> http://localhost:8501
+uv run uvicorn api.main:app --port 8000                                # Swagger : http://localhost:8000/docs
+uv run streamlit run streamlit_app/app.py --server.port=8501           # Dashboard : http://localhost:8501
 ```
 
 Remarques :
@@ -37,6 +46,24 @@ L'API et le dashboard sont déployés automatiquement par la pipeline CI/CD (bra
 - **Staging** : services `credit-scoring-api-staging` / `credit-scoring-dashboard-staging`, déployés depuis la branche `develop` (`render.staging.yaml`)
 
 Attention (plan Render gratuit) : après une période d'inactivité, le service se met en veille — la première requête peut prendre ~1 minute. Réveiller l'API en visitant d'abord `/health`, puis ouvrir le dashboard.
+
+---
+
+## 🗺️ Où sont mes données ?
+
+Une règle simple : **en local, tout atterrit dans le même store `tracking/`** — que l'API tourne en direct (uv) ou en conteneurs (docker compose), le dossier est partagé. Un clone frais part d'une feuille blanche — `tracking/` est ignoré par Git et n'existe pas dans le repo.
+
+| Comment l'API tourne | Où vont MLflow + logs de requêtes | Persistance | Comment consulter |
+|---|---|---|---|
+| `uv run uvicorn...` (local) | `tracking/` du projet (créé au premier démarrage) | oui | `uv run mlflow ui --backend-store-uri sqlite:///tracking/mlflow.db` → http://localhost:5000 |
+| `docker-compose up` (stack locale — **méthode principale**) | `tracking/` du projet (bind mount partagé avec l'hôte — la stack et les runs locaux utilisent le même store) | oui | UI MLflow de la stack : **http://localhost:5001** (service `mlflow-ui`), ou `uv run mlflow ui ...` — même store |
+| Render (production) | `/tmp` — **éphémère** | non — perdu à chaque veille (15 min d'inactivité) ou redéploiement | pas d'UI déployée : exporter puis analyser en local (section Monitoring) |
+
+À retenir :
+
+- les **runs d'entraînement** (`api/train_model.py`) et le **Model Registry** vivent toujours dans `tracking/` du projet — visibles par l'UI MLflow locale (http://localhost:5000) comme par celle de la stack Docker (http://localhost:5001), qui lisent le même store ;
+- le log de requêtes (`api_requests.jsonl`) suit le même principe et vit au même endroit que le store MLflow correspondant ;
+- la mémoire (`GET /monitoring`) est par nature réinitialisée à chaque redémarrage, partout.
 
 ---
 
@@ -99,24 +126,6 @@ uv run python -m api.train_model --tune --n-trials 50 --register
 uv run python -m api.train_model --model-type logistic_regression
 ```
 
-### Lancer l'API
-
-```bash
-uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-- Swagger : http://localhost:8000/docs
-- Health check : http://localhost:8000/health
-- Schéma d'entrée : http://localhost:8000/schema
-
-### Lancer le dashboard Streamlit
-
-```bash
-uv run streamlit run streamlit_app/app.py --server.port=8501
-```
-
-Dashboard : http://localhost:8501 (nécessite l'API démarrée, `API_URL` par défaut : `http://localhost:8000`)
-
 ### Lancer les tests
 
 ```bash
@@ -130,7 +139,7 @@ uv run pytest tests/ -v --cov=api.main
 docker build -t credit-scoring-api .
 docker build -t credit-scoring-api-streamlit -f Dockerfile.streamlit .
 
-# Stack complet en local (API + dashboard)
+# Stack complet en local (API + dashboard + UI MLflow sur http://localhost:5001)
 docker-compose up -d --build
 docker-compose logs -f
 docker-compose down
@@ -165,7 +174,7 @@ La partie monitoring est décrite en détail dans [`monitoring/DRIFT_STUDY.md`](
 
 | Donnée | Stockage actuel |
 |---|---|
-| Inputs complets, outputs, temps d'exécution | MLflow : un run par prédiction (artefact `input.json`, metrics, tags) — SQLite local, volume Docker `api-tracking` |
+| Inputs complets, outputs, temps d'exécution | MLflow : un run par prédiction (artefact `input.json`, metrics, tags) — SQLite local dans `tracking/` (partagé avec la stack Docker par bind mount) |
 | Statut et durée de chaque requête | `tracking/api_requests.jsonl` (une ligne JSON par requête, écrit par le middleware) |
 | Métriques live (latence, taux d'erreur) | Buffer mémoire servi par `GET /monitoring` |
 | Logs applicatifs | JSON sur la sortie standard (une ligne = un objet) |
