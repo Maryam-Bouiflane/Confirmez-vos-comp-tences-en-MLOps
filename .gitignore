@@ -84,3 +84,11 @@ Thumbs.db
 # render.yaml
 
 # Note: uv.lock is intentionally NOT ignored - it should be committed for reproducibility
+
+# Drift-analysis artifacts: summaries (drift_summary*.json) are versioned and
+# consumed by the dashboard; the heavy/regenerable outputs are not
+monitoring/output/drift_report*.html
+monitoring/output/payloads_*.jsonl
+
+# Presentation generale du projet (generee localement, non versionnee)
+/presentation_projet.pptx
