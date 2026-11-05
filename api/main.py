@@ -341,6 +341,76 @@ def get_feature_importances(top_n: int = 20) -> List[Dict[str, Any]]:
 
 
 # ============================================================================
+# In-Memory Monitoring Buffer (served on GET /monitoring)
+# ============================================================================
+
+# Ring buffer of recent predictions. In-memory only: reset on restart or
+# redeploy (no persistent disk on the Render free plan). This powers the
+# dashboard's monitoring tab with real serving data.
+MONITORING_BUFFER_SIZE = 500
+_recent_predictions: deque = deque(maxlen=MONITORING_BUFFER_SIZE)
+_prediction_lock = threading.Lock()
+
+
+def record_prediction(probability: float, prediction: int,
+                      risk_category: str, processing_time_ms: float) -> None:
+    """Append a prediction to the in-memory monitoring buffer."""
+    with _prediction_lock:
+        _recent_predictions.append({
+            "probability": round(float(probability), 4),
+            "prediction": int(prediction),
+            "risk_category": risk_category,
+            "processing_time_ms": round(float(processing_time_ms), 2),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+def _percentile(sorted_values: List[float], p: float) -> float:
+    """Linear-interpolated percentile on an already-sorted list."""
+    if not sorted_values:
+        return 0.0
+    k = (len(sorted_values) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(sorted_values) - 1)
+    if f == c:
+        return sorted_values[f]
+    return sorted_values[f] + (sorted_values[c] - sorted_values[f]) * (k - f)
+
+
+def get_feature_importances(top_n: int = 20) -> List[Dict[str, Any]]:
+    """Extract the model's real feature importances (top N).
+
+    Works for LightGBM (gain-based importances via booster_) and estimators
+    exposing feature_importances_ (e.g. RandomForest). Returns [] when the
+    loaded model exposes no importance information.
+    """
+    if model is None or not feature_names:
+        return []
+    try:
+        importances = None
+        if hasattr(model, "booster_") and hasattr(model.booster_, "feature_importance"):
+            importances = model.booster_.feature_importance(importance_type="gain")
+        elif hasattr(model, "feature_importances_"):
+            importances = model.feature_importances_
+        if importances is None:
+            return []
+        importances = list(map(float, importances))
+        if len(importances) != len(feature_names):
+            logger.warning("Feature importances length mismatch: skipping")
+            return []
+        pairs = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)[:top_n]
+        total = sum(v for _, v in pairs) or 1.0
+        return [
+            {"feature": name, "importance": round(value, 4),
+             "importance_pct": round(100.0 * value / total, 2)}
+            for name, value in pairs
+        ]
+    except Exception as e:
+        logger.warning(f"Could not extract feature importances: {e}")
+        return []
+
+
+# ============================================================================
 # MLflow Configuration
 # ============================================================================
 
