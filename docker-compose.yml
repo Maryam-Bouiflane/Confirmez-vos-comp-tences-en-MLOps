@@ -45,6 +45,9 @@ services:
     volumes:
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
+      # Drift summaries are written on the host (monitoring/drift_analysis.py)
+      # and read by the Data Drift tab: share the folder with the container
+      - ./monitoring:/app/monitoring
     restart: unless-stopped
     networks:
       - credit-scoring-network
