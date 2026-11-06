@@ -68,6 +68,22 @@ services:
     networks:
       - credit-scoring-network
 
+  # MLflow UI: browse training runs and predictions of the shared store
+  # (http://localhost:5001 — port distinct d un mlflow ui local sur 5000)
+  mlflow-ui:
+    # Pinned to match the project's MLflow version: sharing one sqlite store
+    # between different MLflow versions migrates the schema (one-way) and
+    # breaks the older reader. Keep in sync with pyproject/uv.lock.
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command: mlflow ui --backend-store-uri sqlite:////app/tracking/mlflow.db --host 0.0.0.0 --port 5000
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./tracking:/app/tracking
+    restart: unless-stopped
+    networks:
+      - credit-scoring-network
+
 networks:
   credit-scoring-network:
     driver: bridge
