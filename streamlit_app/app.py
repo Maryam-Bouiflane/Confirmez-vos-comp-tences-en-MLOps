@@ -551,9 +551,8 @@ def render_drift_tab() -> None:
             st.metric(
                 "Error rate (request log)",
                 f"{(errors.get('error_rate') or 0) * 100:.1f}%",
-                f"{errors.get('n_errors', 0)}/{errors.get('n_requests', 0)} requests",
-                delta="anomaly" if errors.get("error_rate_anomaly") else None,
-                delta_color="inverse",
+                delta=f"{errors.get('n_errors', 0)}/{errors.get('n_requests', 0)} requests",
+                delta_color="off",
             )
         with ecol2:
             if errors.get("error_rate_anomaly"):
